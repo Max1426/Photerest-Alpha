@@ -1,0 +1,4 @@
+<resources>
+    <!-- Legacy decorated templates leave less usable height below their header. -->
+    <dimen name="notification_photo_edge">36dp</dimen>
+</resources>

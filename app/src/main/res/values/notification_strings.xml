@@ -1,0 +1,6 @@
+<resources>
+    <string name="daily_photo_message">为你精选的一张照片</string>
+    <string name="daily_photo_test_message">为你精选的一张照片（测试）</string>
+    <string name="daily_photo_thumbnail_description">精选照片预览</string>
+    <string name="daily_photo_expanded_description">精选照片大图</string>
+</resources>

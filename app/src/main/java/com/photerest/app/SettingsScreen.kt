@@ -1,0 +1,97 @@
+package com.photerest.app
+
+import android.os.Build
+import androidx.compose.foundation.layout.*
+import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.selection.selectable
+import androidx.compose.foundation.selection.selectableGroup
+import androidx.compose.foundation.selection.toggleable
+import androidx.compose.foundation.verticalScroll
+import androidx.compose.material3.*
+import androidx.compose.runtime.*
+import androidx.compose.runtime.saveable.rememberSaveable
+import androidx.compose.ui.Modifier
+import androidx.compose.ui.platform.testTag
+import androidx.compose.ui.semantics.Role
+import androidx.compose.ui.unit.dp
+
+@Composable
+internal fun SettingsScreen(store: SettingsStore, dismiss: () -> Unit, daily: () -> Unit) {
+    val settings by store.state.collectAsState()
+    val feedback = LocalTapFeedback.current
+    val scroll = rememberScrollState()
+    var chooseStyle by rememberSaveable { mutableStateOf(false) }
+    val dynamicSupported = Build.VERSION.SDK_INT >= 31
+    OperationScreen("设置", "返回个人主页", dismiss) {
+        Column(
+            Modifier.fillMaxSize().verticalScroll(scroll).padding(16.dp),
+            verticalArrangement = Arrangement.spacedBy(20.dp)
+        ) {
+            OperationGroup("外观") {
+                OperationItem("显示模式")
+                Column(Modifier.selectableGroup()) {
+                    listOf(true to "深色", false to "浅色").forEach { (dark, name) ->
+                        OperationItem(
+                            name,
+                            Modifier.selectable(selected = settings.dark == dark, role = Role.RadioButton) {
+                                feedback.perform()
+                                store.setDark(dark)
+                            },
+                            trailing = { RadioButton(settings.dark == dark, onClick = null) }
+                        )
+                    }
+                }
+                OperationItem(
+                    "界面风格", Modifier.tapClickable { chooseStyle = true },
+                    summary = settings.operationStyle.label, trailing = { Text("›") }
+                )
+                val useDynamic = settings.dynamicColor && dynamicSupported
+                OperationItem(
+                    "跟随系统配色",
+                    Modifier.testTag("dynamic-color-switch").toggleable(useDynamic, enabled = dynamicSupported, role = Role.Switch) {
+                        feedback.perform()
+                        store.setDynamicColor(it)
+                    },
+                    summary = if (dynamicSupported) "使用系统动态色" else "系统动态色需要 Android 12 或更新版本",
+                    trailing = { Switch(useDynamic, onCheckedChange = null, enabled = dynamicSupported) }
+                )
+            }
+            OperationGroup("偏好") {
+                OperationItem(
+                    "震动反馈", Modifier.testTag("haptics-switch").toggleable(settings.haptics, role = Role.Switch) {
+                        store.setHaptics(it)
+                        feedback.perform()
+                    },
+                    trailing = { Switch(settings.haptics, onCheckedChange = null) }
+                )
+                OperationItem(
+                    "每日精选", Modifier.tapClickable(onClick = daily),
+                    summary = "定时与你重逢，每次一张本机照片", trailing = { Text("›") }
+                )
+            }
+        }
+    }
+    if (chooseStyle) {
+        AlertDialog(
+            onDismissRequest = { chooseStyle = false },
+            title = { Text("界面风格") },
+            text = {
+                Column(Modifier.selectableGroup()) {
+                    OperationStyle.entries.forEach { style ->
+                        val selected = settings.operationStyle == style
+                        OperationItem(
+                            style.label,
+                            Modifier.testTag("operation-style-${style.name}").selectable(selected, role = Role.RadioButton) {
+                                chooseStyle = false
+                                feedback.perform()
+                                store.setOperationStyle(style)
+                            },
+                            trailing = { RadioButton(selected, onClick = null) }
+                        )
+                    }
+                }
+            },
+            confirmButton = { TapTextButton(onClick = { chooseStyle = false }) { Text("关闭") } }
+        )
+    }
+}

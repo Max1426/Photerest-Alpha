@@ -1,0 +1,4 @@
+<resources>
+    <string name="app_name" translatable="false">Photerest Alpha</string>
+    <color name="launcher_background">#EADDFF</color>
+</resources>

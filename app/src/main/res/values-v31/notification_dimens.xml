@@ -1,0 +1,3 @@
+<resources>
+    <dimen name="notification_photo_edge">48dp</dimen>
+</resources>

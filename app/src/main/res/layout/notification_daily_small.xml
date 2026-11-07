@@ -1,0 +1,13 @@
+<LinearLayout xmlns:android="http://schemas.android.com/apk/res/android"
+    android:layout_width="match_parent" android:layout_height="@dimen/notification_photo_edge"
+    android:orientation="horizontal" android:gravity="center_vertical" android:layoutDirection="ltr">
+    <ImageView android:id="@+id/notification_photo"
+        android:layout_width="@dimen/notification_photo_edge" android:layout_height="@dimen/notification_photo_edge"
+        android:scaleType="fitCenter" android:contentDescription="@string/daily_photo_thumbnail_description" />
+    <TextView android:id="@+id/notification_message"
+        style="@style/TextAppearance.Compat.Notification"
+        android:layout_width="0dp" android:layout_height="match_parent" android:layout_weight="1"
+        android:layout_marginStart="12dp" android:gravity="center_vertical"
+        android:textSize="14sp" android:maxLines="2" android:ellipsize="end"
+        android:text="@string/daily_photo_message" />
+</LinearLayout>
