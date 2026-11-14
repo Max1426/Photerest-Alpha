@@ -64,11 +64,12 @@ fun PhotoImage(
     uri: String, modifier: Modifier = Modifier, large: Boolean = false, revision: Long = 0,
     scale: ContentScale = ContentScale.Crop, thumbnail: Bitmap? = null, preferThumbnail: Boolean = false,
     imageModifier: Modifier = Modifier,
-    onBitmap: ((Bitmap?) -> Unit)? = null
+    onBitmap: ((Bitmap?) -> Unit)? = null,
+    video: Boolean = false
 ) {
     val context = LocalContext.current
-    var bitmap by remember(uri, large, revision) { mutableStateOf<Bitmap?>(if (large) null else PhotoBitmaps.peek(uri, revision)) }
-    LaunchedEffect(uri, large, revision) { if (bitmap == null) bitmap = PhotoBitmaps.load(context, uri, large, revision) }
+    var bitmap by remember(uri, large, revision, video) { mutableStateOf<Bitmap?>(if (large) null else PhotoBitmaps.peek(uri, revision, video)) }
+    LaunchedEffect(uri, large, revision, video) { if (bitmap == null) bitmap = PhotoBitmaps.load(context, uri, large, revision, video) }
     // A failed or loading source always keeps the layout stable.
     val preview = if (preferThumbnail) thumbnail ?: bitmap else bitmap ?: thumbnail
     SideEffect { onBitmap?.invoke(preview) }
@@ -81,30 +82,42 @@ fun PhotoImage(
 @Composable
 fun PhotoCard(photo: Photo, source: PhotoMotionKey, available: Boolean = true, missingText: String = "原图无法访问", open: () -> Unit, menu: () -> Unit) {
     val motion = LocalPhotoMotion.current
+    val videos = LocalVideoPlayback.current
     // Absent preferences fall back to the app default: the text-free grid is on.
     val noText = LocalAppAppearance.current?.noTextMode ?: true
     val tracked = remember(source, photo.added, available) { PhotoCardSource() }
-    DisposableEffect(motion, source, tracked) {
+    DisposableEffect(motion, videos, source, tracked) {
+        // Both media types fly through PhotoMotion; videos additionally report bounds for the preview.
         motion?.track(source, tracked)
-        onDispose { motion?.untrack(source, tracked) }
+        onDispose {
+            motion?.untrack(source, tracked)
+            videos?.untrack(source, tracked)
+        }
     }
     ElevatedCard {
-        Box(Modifier.fillMaxWidth().aspectRatio(photo.aspect.coerceIn(0.12f, 6f)).tapClickable(onClick = open).semantics { contentDescription = "查看照片：${photo.name}" }) {
-            if (available) PhotoImage(
-                photo.uri, Modifier.fillMaxSize()
-                    .onGloballyPositioned { tracked.coordinates = it }
-                    .drawWithContent { if (motion?.flight?.key != source) drawContent() }
-                    .clip(RoundedCornerShape(topStart = 12.dp, topEnd = 12.dp)),
-                revision = photo.added, onBitmap = { tracked.bitmap = it }
-            )
-            else Column(Modifier.fillMaxSize().background(Panel).padding(12.dp), horizontalAlignment = Alignment.CenterHorizontally, verticalArrangement = Arrangement.Center) {
-                Symbol(Glyph.INFO, color = Muted)
-                Spacer(Modifier.height(8.dp)); Text(missingText, fontSize = 12.sp, color = Muted, textAlign = TextAlign.Center)
+        Box(Modifier.fillMaxWidth().aspectRatio(photo.aspect.coerceIn(0.12f, 6f))
+            .onGloballyPositioned {
+                tracked.coordinates = it
+                if (photo.isVideo && available) videos?.track(source, tracked, photo, it)
+            }
+            .tapClickable(onClick = open)
+            .semantics { contentDescription = if (photo.isVideo) "播放视频：${photo.name}" else "查看照片：${photo.name}" }) {
+            Box(Modifier.fillMaxSize().drawWithContent { if (motion?.flight?.key != source) drawContent() }) {
+                if (available && photo.isVideo) VideoPreview(photo, source, onBitmap = { tracked.bitmap = it })
+                else if (available) PhotoImage(
+                    photo.uri, Modifier.fillMaxSize()
+                        .clip(RoundedCornerShape(topStart = 12.dp, topEnd = 12.dp)),
+                    revision = photo.added, onBitmap = { tracked.bitmap = it }
+                )
+                else Column(Modifier.fillMaxSize().background(Panel).padding(12.dp), horizontalAlignment = Alignment.CenterHorizontally, verticalArrangement = Arrangement.Center) {
+                    Symbol(Glyph.INFO, color = Muted)
+                    Spacer(Modifier.height(8.dp)); Text(missingText, fontSize = 12.sp, color = Muted, textAlign = TextAlign.Center)
+                }
             }
         }
         if (!noText) Row(Modifier.fillMaxWidth().padding(start = 6.dp), verticalAlignment = Alignment.CenterVertically) {
             Text(photo.name.substringBeforeLast('.').ifBlank { photo.name }, Modifier.weight(1f), maxLines = 1, overflow = TextOverflow.Ellipsis, style = MaterialTheme.typography.bodyMedium)
-            GlyphButton(Glyph.MORE, "照片菜单：${photo.name}", action = menu)
+            GlyphButton(Glyph.MORE, if (photo.isVideo) "视频菜单：${photo.name}" else "照片菜单：${photo.name}", action = menu)
         }
     }
 }

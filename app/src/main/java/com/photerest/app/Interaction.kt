@@ -22,7 +22,9 @@ data class AppSettings(
     val dark: Boolean = true,
     val operationStyle: OperationStyle = OperationStyle.STANDARD,
     val dynamicColor: Boolean = false,
-    val noTextMode: Boolean = true
+    val noTextMode: Boolean = true,
+    val autoplayVideos: Boolean = true,
+    val showVideos: Boolean = true
 )
 class SettingsStore(context: Context) {
     private val prefs = context.getSharedPreferences("appearance", Context.MODE_PRIVATE)
@@ -32,7 +34,9 @@ class SettingsStore(context: Context) {
         operationStyle = OperationStyle.entries.firstOrNull { it.name == prefs.getString("operation_style", null) }
             ?: OperationStyle.STANDARD,
         dynamicColor = prefs.getBoolean("dynamic_color", false),
-        noTextMode = prefs.getBoolean("no_text_mode", true)
+        noTextMode = prefs.getBoolean("no_text_mode", true),
+        autoplayVideos = prefs.getBoolean("autoplay_videos", true),
+        showVideos = prefs.getBoolean("show_videos", true)
     ))
     val state = mutable.asStateFlow()
     fun setHaptics(value: Boolean) { prefs.edit().putBoolean("haptics", value).apply(); mutable.value = mutable.value.copy(haptics = value) }
@@ -48,6 +52,14 @@ class SettingsStore(context: Context) {
     fun setNoTextMode(value: Boolean) {
         prefs.edit().putBoolean("no_text_mode", value).apply()
         mutable.value = mutable.value.copy(noTextMode = value)
+    }
+    fun setAutoplayVideos(value: Boolean) {
+        prefs.edit().putBoolean("autoplay_videos", value).apply()
+        mutable.value = mutable.value.copy(autoplayVideos = value)
+    }
+    fun setShowVideos(value: Boolean) {
+        prefs.edit().putBoolean("show_videos", value).apply()
+        mutable.value = mutable.value.copy(showVideos = value)
     }
 }
 

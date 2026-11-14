@@ -60,6 +60,7 @@ internal fun BrowserChrome(
     val background = MaterialTheme.colorScheme.background
     val navigationColor = MaterialTheme.colorScheme.surfaceContainer
     val motion = LocalPhotoMotion.current
+    val video = LocalVideoPlayback.current
 
     SubcomposeLayout(
         Modifier.fillMaxSize().background(background)
@@ -83,7 +84,10 @@ internal fun BrowserChrome(
             Box(
                 Modifier.fillMaxSize().onGloballyPositioned { coordinates ->
                     val bounds = coordinates.boundsInRoot()
-                    motion?.browserViewport = bounds.copy(top = bounds.top + top.height, bottom = bounds.bottom - bottom.height)
+                    val content = bounds.copy(top = bounds.top + top.height, bottom = bounds.bottom - bottom.height)
+                    motion?.browserViewport = content
+                    // The muted video preview only considers cards inside the scrollable content area.
+                    video?.viewport = content
                 }.drawWithCache {
                     val innerFade = 32.dp.toPx()
                     val upper = EdgeBand(insets.top.toPx(), insets.fade.toPx(), innerFade, size.height, top = true)

@@ -11,6 +11,7 @@ import android.content.pm.PackageManager
 import android.graphics.Bitmap
 import android.graphics.BitmapFactory
 import android.graphics.Matrix
+import android.media.MediaMetadataRetriever
 import android.net.Uri
 import android.os.Build
 import android.provider.MediaStore
@@ -37,6 +38,9 @@ import kotlinx.coroutines.Job
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.asStateFlow
+import kotlinx.coroutines.flow.distinctUntilChanged
+import kotlinx.coroutines.flow.drop
+import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
@@ -48,7 +52,9 @@ import androidx.compose.runtime.setValue
 data class Photo(
     val uri: String, val name: String, val albumId: String, val mime: String,
     val width: Int, val height: Int, val size: Long, val taken: Long, val added: Long,
+    val durationMs: Long = 0,
 ) {
+    val isVideo: Boolean get() = mime.startsWith("video/")
     val aspect: Float get() = if (width > 0 && height > 0) width.toFloat() / height else 1f
     fun stored() = Store.Photo().also {
         it.uri = uri; it.name = name; it.albumId = albumId; it.mime = mime
@@ -70,7 +76,11 @@ data class PhotoState(
     val favorites: List<Photo> = emptyList(), val memberships: List<Membership> = emptyList(),
     val refreshing: Boolean = false, val switching: Boolean = false, val pendingAlbum: String? = null, val readError: Boolean = false,
     val profileName: String? = null, val avatar: String? = null, val message: String? = null,
+    val videoAccess: Access = Access.NONE,
+    val showVideos: Boolean = true,
 ) {
+    /** Strongest media permission: FULL if either photo or video access is full, NONE only when both are. */
+    val mediaAccess get() = minOf(access, videoAccess)
     fun isFavorite(photo: Photo) = memberships.any { it.uri == photo.uri }
     fun available(photo: Photo): Boolean = sameSource(photo, library[photo.uri])
 }
@@ -88,35 +98,48 @@ fun <T> nextPermutation(items: List<T>, previous: List<T>, random: Random = Rand
 
 object Gallery {
     fun granted(context: Context, permission: String) = ContextCompat.checkSelfPermission(context, permission) == PackageManager.PERMISSION_GRANTED
-    fun access(context: Context): Access = when {
-        Build.VERSION.SDK_INT >= 33 && granted(context, Manifest.permission.READ_MEDIA_IMAGES) -> Access.FULL
+    fun access(context: Context, videos: Boolean = false): Access = when {
+        Build.VERSION.SDK_INT >= 33 && granted(context, if (videos) Manifest.permission.READ_MEDIA_VIDEO else Manifest.permission.READ_MEDIA_IMAGES) -> Access.FULL
         Build.VERSION.SDK_INT >= 34 && granted(context, Manifest.permission.READ_MEDIA_VISUAL_USER_SELECTED) -> Access.PARTIAL
         Build.VERSION.SDK_INT <= 32 && granted(context, Manifest.permission.READ_EXTERNAL_STORAGE) -> Access.FULL
         else -> Access.NONE
     }
     fun permissions(): Array<String> = when {
-        Build.VERSION.SDK_INT >= 34 -> arrayOf(Manifest.permission.READ_MEDIA_IMAGES, Manifest.permission.READ_MEDIA_VISUAL_USER_SELECTED)
-        Build.VERSION.SDK_INT >= 33 -> arrayOf(Manifest.permission.READ_MEDIA_IMAGES)
+        Build.VERSION.SDK_INT >= 34 -> arrayOf(Manifest.permission.READ_MEDIA_IMAGES, Manifest.permission.READ_MEDIA_VIDEO, Manifest.permission.READ_MEDIA_VISUAL_USER_SELECTED)
+        Build.VERSION.SDK_INT >= 33 -> arrayOf(Manifest.permission.READ_MEDIA_IMAGES, Manifest.permission.READ_MEDIA_VIDEO)
         else -> arrayOf(Manifest.permission.READ_EXTERNAL_STORAGE)
     }
-    fun scan(context: Context): Pair<List<Album>, List<Photo>> {
-        if (access(context) == Access.NONE) return emptyList<Album>() to emptyList()
-        val cols = mutableListOf("_id", "_display_name", "bucket_id", "bucket_display_name", "mime_type", "width", "height", "_size", "datetaken", "date_added", "orientation")
-        if (Build.VERSION.SDK_INT >= 29) cols.add("volume_name")
+    fun scan(context: Context, includeVideos: Boolean = false): Pair<List<Album>, List<Photo>> {
         val photos = ArrayList<Photo>()
         val names = linkedMapOf<String, String>()
-        context.contentResolver.query(MediaStore.Images.Media.EXTERNAL_CONTENT_URI, cols.toTypedArray(), null, null, "date_added DESC, _id DESC")?.use { c ->
-            fun string(name: String) = c.getString(c.getColumnIndexOrThrow(name)) ?: ""
-            fun long(name: String) = c.getLong(c.getColumnIndexOrThrow(name))
-            while (c.moveToNext()) {
-                val volume = if (Build.VERSION.SDK_INT >= 29) string("volume_name") else "external"
-                val album = "$volume:${string("bucket_id")}"
-                names[album] = string("bucket_display_name").ifBlank { "未命名相册" }
-                val base = if (Build.VERSION.SDK_INT >= 29) MediaStore.Images.Media.getContentUri(volume) else MediaStore.Images.Media.EXTERNAL_CONTENT_URI
-                val rotated = long("orientation") % 180L != 0L
-                val w = long("width").toInt(); val h = long("height").toInt()
-                photos.add(Photo(ContentUris.withAppendedId(base, long("_id")).toString(), string("_display_name").ifBlank { "未命名照片" }, album, string("mime_type").ifBlank { "image/jpeg" }, if (rotated) h else w, if (rotated) w else h, long("_size"), long("datetaken"), long("date_added")))
+        fun read(videos: Boolean) {
+            if (access(context, videos) == Access.NONE) return
+            val external = if (videos) MediaStore.Video.Media.EXTERNAL_CONTENT_URI else MediaStore.Images.Media.EXTERNAL_CONTENT_URI
+            val cols = mutableListOf("_id", "_display_name", "bucket_id", "bucket_display_name", "mime_type", "width", "height", "_size", "datetaken", "date_added")
+            if (!videos || Build.VERSION.SDK_INT >= 29) cols.add("orientation")
+            if (videos) cols.add("duration")
+            if (Build.VERSION.SDK_INT >= 29) cols.add("volume_name")
+            context.contentResolver.query(external, cols.toTypedArray(), null, null, "date_added DESC, _id DESC")?.use { c ->
+                fun string(name: String) = c.getString(c.getColumnIndexOrThrow(name)) ?: ""
+                fun long(name: String) = c.getLong(c.getColumnIndexOrThrow(name))
+                while (c.moveToNext()) {
+                    val volume = if (Build.VERSION.SDK_INT >= 29) string("volume_name") else "external"
+                    val album = "$volume:${string("bucket_id")}"
+                    names[album] = string("bucket_display_name").ifBlank { "未命名相册" }
+                    val base = if (Build.VERSION.SDK_INT < 29) external else if (videos) MediaStore.Video.Media.getContentUri(volume) else MediaStore.Images.Media.getContentUri(volume)
+                    val rotated = "orientation" in cols && long("orientation") % 180L != 0L
+                    val w = long("width").toInt(); val h = long("height").toInt()
+                    val mime = string("mime_type").ifBlank { if (videos) "video/*" else "image/jpeg" }
+                    photos.add(Photo(ContentUris.withAppendedId(base, long("_id")).toString(), string("_display_name").ifBlank { if (videos) "未命名视频" else "未命名照片" }, album, mime,
+                        if (rotated) h else w, if (rotated) w else h, long("_size"), long("datetaken"), long("date_added"),
+                        if (videos) long("duration") else 0))
+                }
             }
+        }
+        read(false)
+        if (includeVideos) {
+            read(true)
+            photos.sortByDescending { it.added }
         }
         val albums = photos.groupBy { it.albumId }.map { (id, items) -> Album(id, names.getValue(id), items.size, items.first()) }
         return albums to photos
@@ -140,9 +163,12 @@ object Gallery {
         return listOf("文件名" to photo.name, "格式" to photo.mime, "像素尺寸" to if (photo.width > 0 && photo.height > 0) "${photo.width} × ${photo.height}" else "未记录", "文件大小" to android.text.format.Formatter.formatFileSize(context, photo.size), "拍摄时间" to (taken ?: "未记录"), "拍摄位置" to location)
     }
     suspend fun openOriginal(context: Context, photo: Photo): String? {
-        fun unavailable(): String = if (access(context) == Access.FULL) "原图已删除或无法读取" else "照片访问受限，请重新授权"
+        fun unavailable(): String = if (photo.isVideo) {
+            if (access(context, videos = true) == Access.FULL) "原视频已删除或无法读取" else "视频访问受限，请重新授权"
+        } else if (access(context) == Access.FULL) "原图已删除或无法读取" else "照片访问受限，请重新授权"
+        fun notFound(): String = if (photo.isVideo) "找不到这个视频的系统相册原文件" else "找不到这张照片的系统相册原图"
         val uri = Uri.parse(photo.uri)
-        if (uri.scheme != "content" || uri.authority != MediaStore.AUTHORITY) return "找不到这张照片的系统相册原图"
+        if (uri.scheme != "content" || uri.authority != MediaStore.AUTHORITY) return notFound()
         return try {
             val mime = withContext(Dispatchers.IO) {
                 val resolver = context.contentResolver
@@ -150,7 +176,12 @@ object Gallery {
                 val type = resolver.query(uri, columns, null, null, null)?.use { row ->
                     if (!row.moveToFirst()) return@use null
                     if (!sameSource(photo, photo.copy(name = row.getString(0).orEmpty(), added = row.getLong(1)))) return@use null
-                    row.getString(2)?.takeIf { it.startsWith("image/") } ?: "image/*"
+                    val stored = row.getString(2).orEmpty()
+                    when {
+                        stored.startsWith("image/") || stored.startsWith("video/") -> stored
+                        photo.isVideo -> "video/*"
+                        else -> "image/*"
+                    }
                 } ?: return@withContext null
                 resolver.openFileDescriptor(uri, "r")?.use { type }
             } ?: return unavailable()
@@ -159,16 +190,31 @@ object Gallery {
             withContext(Dispatchers.Main) { context.startActivity(intent) }
             null
         } catch (_: ActivityNotFoundException) {
-            "没有可用的相册或图片查看应用"
+            if (photo.isVideo) "没有可用的相册或视频播放应用" else "没有可用的相册或图片查看应用"
         } catch (_: SecurityException) {
-            "照片访问受限，请重新授权"
+            unavailable()
         } catch (_: IOException) {
             unavailable()
         } catch (_: IllegalArgumentException) {
-            "找不到这张照片的系统相册原图"
+            notFound()
         }
     }
     suspend fun share(context: Context, photo: Photo) = withContext(Dispatchers.IO) {
+        if (photo.isVideo) {
+            // Share the original MediaStore URI directly; copying a video would be slow and unnecessary.
+            val uri = Uri.parse(photo.uri)
+            context.contentResolver.openFileDescriptor(uri, "r")?.use { } ?: throw IOException("Unreadable video")
+            withContext(Dispatchers.Main) {
+                val intent = Intent(Intent.ACTION_SEND).apply {
+                    type = photo.mime
+                    putExtra(Intent.EXTRA_STREAM, uri)
+                    clipData = ClipData.newRawUri(photo.name, uri)
+                    addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
+                }
+                context.startActivity(Intent.createChooser(intent, "分享视频"))
+            }
+            return@withContext
+        }
         val dir = File(context.cacheDir, "shares").apply { mkdirs() }
         dir.listFiles()?.filter { System.currentTimeMillis() - it.lastModified() > 86_400_000 }?.forEach { it.delete() }
         val name = photo.name.replace(Regex("[^\\p{L}\\p{N}._ -]"), "_").takeLast(64).ifBlank { "photo.jpg" }
@@ -191,19 +237,42 @@ object Gallery {
 object PhotoBitmaps {
     private val decoders = Semaphore(2)
     fun clear() { cache.evictAll() }
-    fun peek(uri: String, revision: Long) = cache.get("$uri:false:$revision")
+    fun peek(uri: String, revision: Long, video: Boolean = false) = cache.get("$uri:false:$revision:$video")
     private val cache = object : LruCache<String, Bitmap>(32 * 1024 * 1024) {
         override fun sizeOf(key: String, value: Bitmap) = value.allocationByteCount
     }
-    suspend fun load(context: Context, uriString: String, large: Boolean = false, revision: Long = 0): Bitmap? = decoders.withPermit { withContext(Dispatchers.IO) {
-        val key = "$uriString:$large:$revision"
+    suspend fun load(context: Context, uriString: String, large: Boolean = false, revision: Long = 0, video: Boolean = false): Bitmap? = decoders.withPermit { withContext(Dispatchers.IO) {
+        val key = "$uriString:$large:$revision:$video"
         cache.get(key)?.let { return@withContext it }
         try {
             val uri = Uri.parse(uriString)
             val thumbnail = if (!large && Build.VERSION.SDK_INT >= 29 && uri.scheme == "content") {
                 runCatching { context.contentResolver.loadThumbnail(uri, Size(512, 768), null) }.getOrNull()
             } else null
-            val bitmap = thumbnail ?: run {
+            val bitmap = thumbnail ?: if (video) {
+                // Video covers fall back to the first sync frame when the platform thumbnail loader is unavailable.
+                val retriever = MediaMetadataRetriever()
+                try {
+                    retriever.setDataSource(context, uri)
+                    if (Build.VERSION.SDK_INT >= 27) {
+                        val w = retriever.extractMetadata(MediaMetadataRetriever.METADATA_KEY_VIDEO_WIDTH)?.toIntOrNull() ?: 0
+                        val h = retriever.extractMetadata(MediaMetadataRetriever.METADATA_KEY_VIDEO_HEIGHT)?.toIntOrNull() ?: 0
+                        if (w <= 0 || h <= 0) return@withContext null
+                        val scale = minOf(1f, 640f / maxOf(w, h))
+                        val rotated = (retriever.extractMetadata(MediaMetadataRetriever.METADATA_KEY_VIDEO_ROTATION)?.toIntOrNull() ?: 0) % 180 != 0
+                        retriever.getScaledFrameAtTime(0, MediaMetadataRetriever.OPTION_CLOSEST_SYNC,
+                            ((if (rotated) h else w) * scale).toInt().coerceAtLeast(1),
+                            ((if (rotated) w else h) * scale).toInt().coerceAtLeast(1))
+                    } else {
+                        val frame = retriever.getFrameAtTime(0, MediaMetadataRetriever.OPTION_CLOSEST_SYNC)
+                        frame?.let {
+                            val scale = 640f / maxOf(it.width, it.height)
+                            if (scale >= 1f) it else Bitmap.createScaledBitmap(it, (it.width * scale).toInt().coerceAtLeast(1),
+                                (it.height * scale).toInt().coerceAtLeast(1), true).also { scaled -> if (scaled !== it) it.recycle() }
+                        }
+                    }
+                } finally { retriever.release() }
+            } else run {
                 val options = BitmapFactory.Options().apply { inJustDecodeBounds = true }
                 context.contentResolver.openInputStream(uri)?.use { BitmapFactory.decodeStream(it, null, options) }
                 var sample = 1
@@ -219,7 +288,7 @@ object PhotoBitmaps {
                 } }
                 if (!matrix.isIdentity) Bitmap.createBitmap(decoded, 0, 0, decoded.width, decoded.height, matrix, true).also { if (it !== decoded) decoded.recycle() } else decoded
             }
-            cache.put(key, bitmap); bitmap
+            bitmap?.also { cache.put(key, it) }
         } catch (cancelled: CancellationException) { throw cancelled } catch (_: Exception) { null }
     } }
 }
@@ -237,7 +306,13 @@ class PhotoModel(app: Application) : AndroidViewModel(app) {
     private var preloadJob: Job? = null
     val hapticRequests = java.util.concurrent.atomic.AtomicInteger(0)
     fun viewport(id: String?) = viewports.getOrPut(id) { TabViewport() }
-    init { reload() }
+    init {
+        reload()
+        // Toggling "show videos" re-filters the waterfalls without restarting the app.
+        viewModelScope.launch {
+            settings.state.map { it.showVideos }.distinctUntilChanged().drop(1).collect { reload() }
+        }
+    }
     private fun launchOperation(block: suspend () -> Unit) = viewModelScope.launch {
         try { block() } catch (cancelled: CancellationException) { throw cancelled } catch (_: Exception) { message("操作未完成，请检查照片访问权限后重试") }
     }
@@ -252,36 +327,56 @@ class PhotoModel(app: Application) : AndroidViewModel(app) {
         mutex.withLock {
             mutable.value = mutable.value.copy(busy = true, refreshing = shuffle)
             try {
+                val showVideos = settings.state.value.showVideos
                 val snapshot = withContext(Dispatchers.IO) {
                     dao.addFolder(Store.Folder(1, "默认收藏夹"))
-                    val (albums, photos) = Gallery.scan(getApplication())
+                    val (albums, photos) = Gallery.scan(getApplication(), includeVideos = true)
+                    val visible = if (showVideos) photos else photos.filter { !it.isVideo }
+                    val visibleGroups = visible.groupBy { it.albumId }
+                    val visibleAlbums = albums.mapNotNull { album ->
+                        val items = visibleGroups[album.id].orEmpty()
+                        if (items.isEmpty()) null else album.copy(count = items.size, cover = items.first())
+                    }
+                    val library = photos.associateBy { it.uri }
                     val profile = dao.profile()
-                    PhotoState(ready = true, access = Gallery.access(getApplication()), deviceAlbums = albums,
-                        imported = dao.albums().map { saved -> albums.find { it.id == saved.id } ?: Album(saved.id, saved.name) },
-                        library = photos.associateBy { it.uri }, folders = dao.folders().map { Folder(it.id, it.name) },
-                        favorites = dao.photos().map(Photo::from), memberships = dao.favorites().map { Membership(it.uri, it.folderId) },
-                        profileName = profile?.name, avatar = profile?.avatar)
+                    PhotoState(ready = true, access = Gallery.access(getApplication()), deviceAlbums = visibleAlbums,
+                        imported = dao.albums().mapNotNull { saved ->
+                            visibleAlbums.find { it.id == saved.id } ?: if (showVideos) Album(saved.id, saved.name) else null
+                        },
+                        library = library, folders = dao.folders().map { Folder(it.id, it.name) },
+                        favorites = dao.photos().mapNotNull { row ->
+                            val saved = Photo.from(row)
+                            if (!showVideos && saved.isVideo) return@mapNotNull null
+                            library[saved.uri]?.takeIf { sameSource(saved, it) } ?: saved
+                        }, memberships = dao.favorites().map { Membership(it.uri, it.folderId) },
+                        profileName = profile?.name, avatar = profile?.avatar,
+                        videoAccess = Gallery.access(getApplication(), videos = true), showVideos = showVideos)
                 }
                 val current = mutable.value
-                if (snapshot.access != current.access) { tabFeeds.clear(); PhotoBitmaps.clear() }
+                if (snapshot.access != current.access || snapshot.videoAccess != current.videoAccess) {
+                    tabFeeds.clear()
+                    PhotoBitmaps.clear()
+                }
                 val selected = current.selectedAlbum.takeIf { id -> snapshot.imported.any { it.id == id } }
                 val keys = listOf<String?>(null) + snapshot.imported.map { it.id }
                 tabFeeds.keys.retainAll(keys.toSet())
-                val groups = snapshot.library.values.groupBy { it.albumId }
+                val visibleLibrary = snapshot.library.values.filter { snapshot.showVideos || !it.isVideo }
+                val groups = visibleLibrary.groupBy { it.albumId }
                 keys.forEach { id ->
-                    val pool = if (id == null) snapshot.library.values.toList() else groups[id].orEmpty()
+                    val pool = if (id == null) visibleLibrary.toList() else groups[id].orEmpty()
                     tabFeeds[id] = reconcile(tabFeeds[id], pool, shuffle && id == selected)
                 }
-                if (snapshot.access == Access.NONE) { selectionEpoch++; preloadJob?.cancel() }
+                if (snapshot.mediaAccess == Access.NONE) { selectionEpoch++; preloadJob?.cancel() }
                 mutable.value = snapshot.copy(selectedAlbum = selected, feed = tabFeeds[selected].orEmpty(),
-                    switching = current.switching && snapshot.access != Access.NONE, pendingAlbum = current.pendingAlbum,
+                    switching = current.switching && snapshot.mediaAccess != Access.NONE, pendingAlbum = current.pendingAlbum,
                     message = current.message)
                 preloadNeighbours()
             } catch (cancelled: CancellationException) { throw cancelled }
             catch (_: Exception) {
                 selectionEpoch++; preloadJob?.cancel(); tabFeeds.clear(); PhotoBitmaps.clear()
                 mutable.value = mutable.value.copy(ready = true, busy = false, refreshing = false, switching = false,
-                    readError = true, feed = emptyList(), library = emptyMap(), access = Gallery.access(getApplication()), message = "读取相册失败，请重新授权后重试")
+                    readError = true, feed = emptyList(), library = emptyMap(), access = Gallery.access(getApplication()),
+                    videoAccess = Gallery.access(getApplication(), videos = true), message = "读取相册失败，请重新授权后重试")
             }
         }
     }
@@ -289,7 +384,7 @@ class PhotoModel(app: Application) : AndroidViewModel(app) {
         if (photos.isEmpty()) return
         val index = viewport(id).grid.firstVisibleItemIndex.coerceIn(0, photos.lastIndex)
         for (photo in photos.drop(index).take(2)) {
-            if (PhotoBitmaps.load(getApplication(), photo.uri, revision = photo.added) != null) break
+            if (PhotoBitmaps.load(getApplication(), photo.uri, revision = photo.added, video = photo.isVideo) != null) break
         }
     }
     private fun preloadNeighbours() {
@@ -309,17 +404,20 @@ class PhotoModel(app: Application) : AndroidViewModel(app) {
         preloadJob?.cancel()
         mutable.value = current.copy(switching = true, pendingAlbum = id)
         return launchOperation {
-            val pool = if (id == null) mutable.value.library.values.toList() else mutable.value.library.values.filter { it.albumId == id }
+            val visible = mutable.value.library.values.filter { mutable.value.showVideos || !it.isVideo }
+            val pool = if (id == null) visible.toList() else visible.filter { it.albumId == id }
             val photos = reconcile(tabFeeds[id], pool, false)
             warm(id, photos)
             if (token != selectionEpoch) return@launchOperation
-            if (Gallery.access(getApplication()) != mutable.value.access) reload().join()
-            if (token != selectionEpoch || mutable.value.access == Access.NONE) return@launchOperation
+            if (Gallery.access(getApplication()) != mutable.value.access ||
+                Gallery.access(getApplication(), videos = true) != mutable.value.videoAccess) reload().join()
+            if (token != selectionEpoch || mutable.value.mediaAccess == Access.NONE) return@launchOperation
             if (id != null && mutable.value.imported.none { it.id == id }) {
                 mutable.value = mutable.value.copy(switching = false, pendingAlbum = null)
                 return@launchOperation
             }
-            val currentPool = if (id == null) mutable.value.library.values.toList() else mutable.value.library.values.filter { it.albumId == id }
+            val visibleNow = mutable.value.library.values.filter { mutable.value.showVideos || !it.isVideo }
+            val currentPool = if (id == null) visibleNow.toList() else visibleNow.filter { it.albumId == id }
             val accessible = reconcile(photos, currentPool, false)
             tabFeeds[id] = accessible
             mutable.value = mutable.value.copy(selectedAlbum = id, feed = accessible, switching = false, pendingAlbum = null)

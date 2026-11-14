@@ -10,8 +10,8 @@ android {
         applicationId = "com.photerest.app.material"
         minSdk = 26
         targetSdk = 35
-        versionCode = 7
-        versionName = "1.3.1"
+        versionCode = 13
+        versionName = "1.4.5"
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
         testInstrumentationRunnerArguments["notAnnotation"] = "com.photerest.app.PermissionScenario"
     }
@@ -32,6 +32,8 @@ dependencies {
     implementation("androidx.room:room-runtime:2.6.1")
     annotationProcessor("androidx.room:room-compiler:2.6.1")
     implementation("androidx.exifinterface:exifinterface:1.3.6")
+    implementation("androidx.media3:media3-exoplayer:1.7.1")
+    implementation("androidx.media3:media3-ui:1.7.1")
     implementation("androidx.work:work-runtime-ktx:2.10.5")
     testImplementation("junit:junit:4.13.2")
     androidTestImplementation(bom)

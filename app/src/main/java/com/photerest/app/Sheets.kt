@@ -37,7 +37,7 @@ fun PhotoActionSheet(photo: Photo, state: PhotoState, dismiss: () -> Unit, share
                     .clip(MaterialTheme.shapes.large).background(Panel),
                 contentAlignment = Alignment.Center
             ) {
-                if (state.available(photo)) PhotoImage(photo.uri, Modifier.fillMaxSize(), revision = photo.added, scale = ContentScale.Fit)
+                if (state.available(photo)) PhotoImage(photo.uri, Modifier.fillMaxSize(), revision = photo.added, scale = ContentScale.Fit, video = photo.isVideo)
                 else Text("原图无法访问", color = Muted)
             }
             Spacer(Modifier.height(16.dp))
@@ -61,21 +61,21 @@ fun ImportSheet(state: PhotoState, dismiss: () -> Unit, authorize: () -> Unit, s
             OperationHeading("关联手机相册", Modifier.padding(horizontal = 16.dp))
             LazyColumn(Modifier.weight(1f), contentPadding = PaddingValues(vertical = 8.dp)) {
                 item {
-                    OperationItem("相册分类", summary = "关联后添加顶部相册分类。“全部”始终展示所有已授权照片。")
+                    OperationItem("相册分类", summary = "关联后添加顶部相册分类。“全部”始终展示所有已授权的照片和视频。")
                 }
-                if (state.access != Access.FULL) item {
+                if (state.access != Access.FULL || state.videoAccess != Access.FULL) item {
                     OperationItem(
-                        "照片访问",
-                        summary = if (state.access == Access.NONE) "需要照片访问权限才能列出相册。" else "当前只列出包含已授权照片的相册。"
+                        "媒体访问",
+                        summary = if (state.mediaAccess == Access.NONE) "需要媒体访问权限才能列出相册。" else "当前只列出包含已授权照片或视频的相册。"
                     )
                     Column(Modifier.padding(horizontal = 8.dp)) {
-                        TapTextButton(onClick = authorize) { Text(if (state.access == Access.NONE) "授权照片访问" else "选择更多照片") }
+                        TapTextButton(onClick = authorize) { Text(if (state.mediaAccess == Access.NONE) "授权照片访问" else "选择更多照片") }
                         TapTextButton(onClick = settings) { Text("系统设置") }
                     }
                 }
                 if (state.busy) item { LinearProgressIndicator(Modifier.fillMaxWidth().padding(vertical = 8.dp)) }
                 val albums = state.deviceAlbums + state.imported.filter { saved -> state.deviceAlbums.none { it.id == saved.id } }
-                if (albums.isEmpty() && state.access != Access.NONE && !state.busy) item { OperationItem("没有发现可访问的本地照片相册") }
+                if (albums.isEmpty() && state.mediaAccess != Access.NONE && !state.busy) item { OperationItem("没有发现可访问的本地照片相册") }
                 items(albums, key = { it.id }) { album ->
                     val linked = state.imported.any { it.id == album.id }
                     val selection = if (linked) Modifier else Modifier.toggleable(album.id in selected, role = Role.Checkbox) { checked ->
@@ -84,10 +84,10 @@ fun ImportSheet(state: PhotoState, dismiss: () -> Unit, authorize: () -> Unit, s
                     }
                     OperationItem(
                         album.name, selection,
-                        summary = "${album.count} 张可访问照片${if (linked) " · 已关联" else ""}",
+                        summary = "${album.count} 项可访问内容${if (linked) " · 已关联" else ""}",
                         leading = {
                             Box(Modifier.size(48.dp).clip(MaterialTheme.shapes.medium).background(Panel), contentAlignment = Alignment.Center) {
-                                album.cover?.let { PhotoImage(it.uri, Modifier.fillMaxSize()) } ?: Symbol(Glyph.FOLDER)
+                                album.cover?.let { PhotoImage(it.uri, Modifier.fillMaxSize(), video = it.isVideo) } ?: Symbol(Glyph.FOLDER)
                             }
                         },
                         trailing = {

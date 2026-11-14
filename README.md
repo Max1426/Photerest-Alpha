@@ -5,7 +5,10 @@ Photerest 的开源 Android 照片浏览实验版，使用 Kotlin、Jetpack Comp
 - [下载 Photerest Alpha](https://github.com/Max1426/Photerest-Alpha/releases)
 - [经典正式版下载与更新记录](https://github.com/Max1426/Photerest)
 
-## 1.3.1
+## 1.4.5
+
+- 首页、关联相册和收藏支持照片与视频混排、静音预览、播放、分享和收藏。视频详情可用系统相册或播放器打开原视频。
+- 视频支持原位展开、缩回和系统预测返回。「设置 → 偏好 → 在瀑布流中显示视频」可切回纯照片浏览。
 
 - 无字模式默认开启，隐藏照片卡片下方的文件名和菜单。可在「设置 → 外观」关闭。
 - 主页和个人页使用上下栏渐变，Android 12 及以上支持背景模糊。

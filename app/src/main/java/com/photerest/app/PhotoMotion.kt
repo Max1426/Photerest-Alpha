@@ -94,6 +94,8 @@ internal class PhotoMotion(private val scope: CoroutineScope) {
 
     val busy get() = detail != null && (progress < 1f || flight != null)
     val chromeAlpha get() = ((progress - .65f) / .35f).coerceIn(0f, 1f)
+    /** True while a predictive/back shrink is running, so detail playback should keep running. */
+    val isReturning get() = closing || seeking
 
     fun track(key: PhotoMotionKey, card: PhotoCardSource) {
         cards[key] = card
@@ -103,16 +105,17 @@ internal class PhotoMotion(private val scope: CoroutineScope) {
         if (cards[key] === card) cards.remove(key)
     }
 
-    fun open(photo: Photo, source: PhotoMotionKey?, fromNotification: Boolean = false) {
+    fun open(photo: Photo, source: PhotoMotionKey?, fromNotification: Boolean = false, thumbnail: Bitmap? = null) {
         if (detail != null && !fromNotification) return
         animation?.cancel()
-        val thumbnail = cards[source]?.bitmap
+        // Video callers pass the frame currently visible on the card so the flight starts on that exact frame.
+        val cover = thumbnail ?: cards[source]?.bitmap
         progress = 0f
         flight = null
         opened = false
         closing = false
         seeking = false
-        detail = PhotoDetail(photo, source, thumbnail)
+        detail = PhotoDetail(photo, source, cover)
         if (!animationsEnabled()) {
             opened = true
             progress = 1f
@@ -194,7 +197,8 @@ internal class PhotoMotion(private val scope: CoroutineScope) {
         val cardSource = cards[key] ?: return null
         val coordinates = cardSource.coordinates?.takeIf { it.isAttached && it.size.width > 0 && it.size.height > 0 } ?: return null
         val detailBitmap = bitmap ?: cardSource.bitmap ?: return null
-        val thumbnail = cardSource.bitmap ?: return null
+        // Prefer the frame captured for this flight (video) over the generic card cover.
+        val thumbnail = scene.thumbnail ?: cardSource.bitmap ?: return null
         val detail = scene.frame() ?: return null
         val viewport = browserViewport ?: return null
         val clip = coordinates.boundsInRoot().intersect(viewport)

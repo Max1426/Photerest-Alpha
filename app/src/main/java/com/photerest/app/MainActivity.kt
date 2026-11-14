@@ -43,6 +43,7 @@ import androidx.lifecycle.Lifecycle
 import androidx.lifecycle.LifecycleEventObserver
 import androidx.lifecycle.ViewModelProvider
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.MutableStateFlow
 import androidx.lifecycle.lifecycleScope
 
@@ -121,11 +122,16 @@ private fun AppWindowBars(browser: Boolean) {
 @Composable
 fun PhoterestApp(model: PhotoModel, dailyOpen: DailyOpenRequest? = null) {
     val state by model.state.collectAsState()
+    val appearance by model.settings.state.collectAsState()
     val context = LocalContext.current
     val scope = rememberCoroutineScope()
     var profilePage by rememberSaveable { mutableStateOf(false) }
     val motion = remember(scope) { PhotoMotion(scope) }
     val detail = motion.detail
+    val video = remember(context) { VideoPlayback(context.applicationContext) }
+    var foreground by remember {
+        mutableStateOf((context as? ComponentActivity)?.lifecycle?.currentState?.isAtLeast(Lifecycle.State.RESUMED) == true)
+    }
     var actions by remember { mutableStateOf<Photo?>(null) }
     var favorite by remember { mutableStateOf<Photo?>(null) }
     var pendingFavorite by remember { mutableStateOf<Photo?>(null) }
@@ -145,14 +151,24 @@ fun PhoterestApp(model: PhotoModel, dailyOpen: DailyOpenRequest? = null) {
         onboarding.edit().putBoolean("photo_permission_requested", true).apply()
         permission.launch(Gallery.permissions())
     }
-    LaunchedEffect(state.ready, state.access) {
-        if (state.ready && state.access == Access.NONE && !onboarding.getBoolean("photo_permission_requested", false)) authorize()
+    fun authorizeVideos() {
+        // A video-only request never clears the photo permission that is already granted.
+        permission.launch(when {
+            Build.VERSION.SDK_INT >= 34 -> arrayOf(Manifest.permission.READ_MEDIA_VIDEO, Manifest.permission.READ_MEDIA_VISUAL_USER_SELECTED)
+            Build.VERSION.SDK_INT >= 33 -> arrayOf(Manifest.permission.READ_MEDIA_VIDEO)
+            else -> Gallery.permissions()
+        })
+    }
+    LaunchedEffect(state.ready, state.mediaAccess) {
+        if (state.ready && state.mediaAccess == Access.NONE && !onboarding.getBoolean("photo_permission_requested", false)) authorize()
     }
     LaunchedEffect(dailyOpen, state.ready, state.busy) {
         if (dailyOpen != null && state.ready && !state.busy && handledDaily != dailyOpen.sequence) {
             handledDaily = dailyOpen.sequence
             settingsRoute = null; actions = null; info = null; favorite = null; showImport = false
             editProfile = false; pendingFavorite = null
+            video.close()
+            video.stopPreview()
             motion.open(dailyOpen.photo, null, fromNotification = true)
         }
     }
@@ -178,11 +194,17 @@ fun PhoterestApp(model: PhotoModel, dailyOpen: DailyOpenRequest? = null) {
             finally { openingOriginal = false }
         }
     }
-    DisposableEffect(context) {
+    DisposableEffect(context, video) {
         val lifecycle = (context as ComponentActivity).lifecycle
-        val observer = LifecycleEventObserver { _, event -> if (event == Lifecycle.Event.ON_RESUME) model.reload() }
+        val observer = LifecycleEventObserver { _, event ->
+            when (event) {
+                Lifecycle.Event.ON_RESUME -> { foreground = true; model.reload() }
+                Lifecycle.Event.ON_PAUSE -> { foreground = false; video.setForeground(false) }
+                else -> Unit
+            }
+        }
         lifecycle.addObserver(observer)
-        onDispose { lifecycle.removeObserver(observer) }
+        onDispose { lifecycle.removeObserver(observer); video.release() }
     }
     LaunchedEffect(state.message) { state.message?.let { Toast.makeText(context, it, Toast.LENGTH_SHORT).show(); model.message(null) } }
     val saveableState = rememberSaveableStateHolder()
@@ -199,11 +221,39 @@ fun PhoterestApp(model: PhotoModel, dailyOpen: DailyOpenRequest? = null) {
     val sourceCheck by rememberUpdatedState(::sourceAvailable)
     val modalOpen = settingsRoute != null || showImport || actions != null || editProfile || favorite != null || info != null
     val modalVisible by rememberUpdatedState(modalOpen)
+    val canPreview = foreground && !modalOpen && appearance.autoplayVideos && appearance.showVideos && detail == null && video.detail == null &&
+        !state.switching && !state.refreshing && state.videoAccess != Access.NONE
+    val detailAvailable = detail?.photo?.let { state.available(it) } == true
+    LaunchedEffect(foreground, modalOpen) { video.setForeground(foreground && !modalOpen) }
+    LaunchedEffect(canPreview, profilePage, state.selectedAlbum) {
+        video.stopPreview()
+        if (canPreview) {
+            while (true) {
+                video.updatePreview(profilePage, state.selectedAlbum)
+                delay(90)
+            }
+        }
+    }
+    LaunchedEffect(detail, detailAvailable) {
+        if (detail?.photo?.isVideo == true) video.setDetailAvailable(detailAvailable)
+    }
+    // Start playing only after the expand flight settles, so the flight frame matches the first
+    // rendered detail frame instead of showing a different frame mid-animation.
+    LaunchedEffect(detail, motion.progress, motion.flight) {
+        if (detail?.photo?.isVideo == true && motion.progress >= 1f && motion.flight == null) video.setDetailRevealed(true)
+    }
+    // The shrink-back animation keeps the detail playback alive; stop it only after the motion
+    // layer has fully returned to the grid, so the muted preview can resume at the same position.
+    LaunchedEffect(detail) {
+        if (detail == null && video.detail != null) video.close()
+    }
     AppWindowBars(browser = detail == null || motion.busy)
     BackHandler(enabled = detail == null && profilePage && !modalOpen) { profilePage = false }
     PredictiveBackHandler(enabled = detail != null && !modalOpen) { events ->
         val scene = motion.detail ?: return@PredictiveBackHandler
         if (modalVisible) return@PredictiveBackHandler
+        // Video: start the shrink from the frame currently on screen, not the stale cover thumbnail.
+        if (scene.photo.isVideo) video.captureFrame()?.let { scene.bitmap = it }
         try {
             events.collect { motion.seekBack(scene, it.progress, sourceCheck(scene)) }
             motion.close(scene, sourceCheck(scene))
@@ -213,14 +263,27 @@ fun PhoterestApp(model: PhotoModel, dailyOpen: DailyOpenRequest? = null) {
         }
     }
     fun openPhoto(photo: Photo, source: PhotoMotionKey) {
-        motion.open(photo, source.takeIf { state.available(photo) })
+        val available = state.available(photo)
+        if (photo.isVideo) {
+            // Fly with the exact frame visible on the card; playback stays on that frame until
+            // the expand animation has settled.
+            val frame = video.captureFrame()
+            video.open(photo, source, available, startPaused = true)
+            motion.open(photo, source.takeIf { available }, thumbnail = frame)
+        } else {
+            video.stopPreview()
+            motion.open(photo, source.takeIf { available })
+        }
     }
     var rootOrigin by remember { mutableStateOf(Offset.Zero) }
     OperationTheme {
         Box(Modifier.fillMaxSize().onGloballyPositioned { rootOrigin = it.positionInRoot() }) {
-            CompositionLocalProvider(LocalPhotoMotion provides motion) {
+            CompositionLocalProvider(LocalPhotoMotion provides motion, LocalVideoPlayback provides video) {
                 Box(Modifier.fillMaxSize().graphicsLayer { alpha = if (motion.progress == 1f && motion.flight == null) 0f else 1f }
                     .semantics { if (detail != null) hideFromAccessibility() }) {
+                    // Shared between Home/Profile so the press bounce continues across the page swap.
+                    val homeBounce = remember { NavigationBounceState() }
+                    val profileBounce = remember { NavigationBounceState() }
                     val bottomBar: @Composable () -> Unit = {
                         NavigationBar(
                             containerColor = Color.Transparent,
@@ -228,25 +291,27 @@ fun PhoterestApp(model: PhotoModel, dailyOpen: DailyOpenRequest? = null) {
                             windowInsets = WindowInsets.navigationBars.union(WindowInsets.displayCutout)
                                 .only(WindowInsetsSides.Bottom)
                         ) {
-                            NavigationBarItem(
+                            BouncyNavigationItem(
                                 selected = !profilePage,
                                 onClick = {
                                     feedback.perform()
                                     if (profilePage) profilePage = false else refreshHome()
                                 },
-                                icon = { Symbol(Glyph.HOME) },
-                                label = { Text("主页") },
-                                modifier = Modifier.semantics { contentDescription = "主页，刷新照片" }
+                                bounce = homeBounce,
+                                description = "主页，刷新照片",
+                                label = "主页",
+                                icon = { Symbol(Glyph.HOME) }
                             )
-                            NavigationBarItem(
+                            BouncyNavigationItem(
                                 selected = profilePage,
                                 onClick = { feedback.perform(); profilePage = true },
+                                bounce = profileBounce,
+                                description = "个人账号",
+                                label = "个人",
                                 icon = {
                                     if (state.avatar == null) Symbol(Glyph.USER)
                                     else Avatar(state.avatar, state.profileName, Modifier.size(24.dp))
-                                },
-                                label = { Text("个人") },
-                                modifier = Modifier.semantics { contentDescription = "个人账号" }
+                                }
                             )
                         }
                     }
@@ -274,19 +339,31 @@ fun PhoterestApp(model: PhotoModel, dailyOpen: DailyOpenRequest? = null) {
                 }) {
                     Box(Modifier.matchParentSize().graphicsLayer { alpha = motion.progress }
                         .background(MaterialTheme.colorScheme.background))
-                    DetailScreen(detail, motion, available, state.isFavorite(photo),
-                        { motion.close(detail, sourceAvailable(detail)) },
-                        { if (!motion.busy) collect(photo) }, { if (!motion.busy) share(photo) },
-                        { if (!motion.busy) info = photo }, { if (!motion.busy) openOriginal(photo) },
-                        if (state.access == Access.FULL) "原图已删除或不可读取" else "照片访问受限，请重新授权",
-                        { authorize() })
+                    if (photo.isVideo) {
+                        VideoDetailScreen(detail, video, motion, available, state.videoAccess, state.isFavorite(photo),
+                            {
+                                detail.bitmap = video.captureFrame() ?: detail.bitmap
+                                motion.close(detail, sourceAvailable(detail))
+                            },
+                            { if (!motion.busy) share(photo) }, { if (!motion.busy) collect(photo) },
+                            { if (!motion.busy) openOriginal(photo) },
+                            ::authorizeVideos)
+                    } else {
+                        DetailScreen(detail, motion, available, state.isFavorite(photo),
+                            { motion.close(detail, sourceAvailable(detail)) },
+                            { if (!motion.busy) collect(photo) }, { if (!motion.busy) share(photo) },
+                            { if (!motion.busy) info = photo }, { if (!motion.busy) openOriginal(photo) },
+                            if (state.access == Access.FULL) "原图已删除或不可读取" else "照片访问受限，请重新授权",
+                            { authorize() })
+                    }
                 }
                 motion.flight?.let { PhotoFlightOverlay(it, { motion.progress }, { rootOrigin }) }
             }
         }
 
         when (settingsRoute) {
-            SettingsRoute.MAIN -> SettingsScreen(model.settings, { settingsRoute = null }, { settingsRoute = SettingsRoute.DAILY })
+            SettingsRoute.MAIN -> SettingsScreen(model.settings, { settingsRoute = null }, { settingsRoute = SettingsRoute.DAILY },
+                videoAccess = state.videoAccess, authorizeVideos = ::authorizeVideos)
             SettingsRoute.DAILY -> {
                 DailySettingsScreen(model, { settingsRoute = SettingsRoute.MAIN }, { authorize() })
             }

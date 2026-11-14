@@ -16,7 +16,7 @@ import androidx.compose.ui.semantics.Role
 import androidx.compose.ui.unit.dp
 
 @Composable
-internal fun SettingsScreen(store: SettingsStore, dismiss: () -> Unit, daily: () -> Unit) {
+internal fun SettingsScreen(store: SettingsStore, dismiss: () -> Unit, daily: () -> Unit, videoAccess: Access = Access.NONE, authorizeVideos: () -> Unit = {}) {
     val settings by store.state.collectAsState()
     val feedback = LocalTapFeedback.current
     val scroll = rememberScrollState()
@@ -73,6 +73,35 @@ internal fun SettingsScreen(store: SettingsStore, dismiss: () -> Unit, daily: ()
                     },
                     trailing = { Switch(settings.haptics, onCheckedChange = null) }
                 )
+                OperationItem(
+                    "自动静音预览视频",
+                    Modifier.testTag("video-autoplay-switch").toggleable(settings.autoplayVideos, role = Role.Switch) {
+                        store.setAutoplayVideos(it)
+                        feedback.perform()
+                    },
+                    summary = "列表只自动预览一条视频，静音循环；滚出可见区、切换页面或应用进入后台时停止。",
+                    trailing = { Switch(settings.autoplayVideos, onCheckedChange = null) }
+                )
+                OperationItem(
+                    "在瀑布流中显示视频",
+                    Modifier.testTag("show-videos-switch").toggleable(settings.showVideos, role = Role.Switch) {
+                        store.setShowVideos(it)
+                        feedback.perform()
+                    },
+                    summary = if (settings.showVideos) "关闭后首页、相册和收藏的瀑布流只显示照片；视频与收藏关系仍保留。" else "瀑布流当前只显示照片，打开后重新显示视频。",
+                    trailing = { Switch(settings.showVideos, onCheckedChange = null) }
+                )
+                if (videoAccess != Access.FULL) {
+                    OperationItem(
+                        "视频访问权限",
+                        summary = when (videoAccess) {
+                            Access.NONE -> "尚未允许读取视频。已授权的照片和收藏不受影响。"
+                            Access.PARTIAL -> "当前只显示已选择的视频。"
+                            Access.FULL -> ""
+                        },
+                        trailing = { TapTextButton(onClick = authorizeVideos) { Text("授权视频访问") } }
+                    )
+                }
                 OperationItem(
                     "每日精选", Modifier.tapClickable(onClick = daily),
                     summary = "定时与你重逢，每次一张本机照片", trailing = { Text("›") }

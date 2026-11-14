@@ -48,7 +48,7 @@ class PermissionDeviceTest {
             if (access == Access.NONE) {
                 assertTrue(model.state.value.feed.isEmpty())
                 ui.onNodeWithText("让照片在这里相遇").assertExists()
-            } else ui.onNodeWithText("仅显示已授权照片 · 管理访问范围").assertExists()
+            } else ui.onNodeWithText("仅显示已授权内容 · 管理访问范围").assertExists()
             ui.waitForIdle()
             val directory = File(context.getExternalFilesDir(null), "evidence").apply { mkdirs() }
             instrumentation.uiAutomation.takeScreenshot().let { image -> File(directory, "$screenshot.png").outputStream().use { image.compress(Bitmap.CompressFormat.PNG, 100, it) }; image.recycle() }

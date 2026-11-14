@@ -66,8 +66,8 @@ fun HomeScreen(
                         }
                     }
                 }
-                if (state.access == Access.PARTIAL) {
-                    TapTextButton(onClick = authorize) { Text("仅显示已授权照片 · 管理访问范围") }
+                if (state.access == Access.PARTIAL || state.videoAccess == Access.PARTIAL) {
+                    TapTextButton(onClick = authorize) { Text("仅显示已授权内容 · 管理访问范围") }
                 }
             }
         },
@@ -75,7 +75,7 @@ fun HomeScreen(
         scrollState = viewport.grid,
         scrollLayout = { viewport.grid.layoutInfo }
     ) { insets ->
-        if (state.ready && state.access != Access.NONE && !state.readError && state.feed.isNotEmpty()) {
+        if (state.ready && state.mediaAccess != Access.NONE && !state.readError && state.feed.isNotEmpty()) {
             val refreshState = rememberPullToRefreshState()
             PullToRefreshBox(
                 isRefreshing = state.refreshing, onRefresh = refresh, state = refreshState,
@@ -107,13 +107,13 @@ fun HomeScreen(
                 horizontalAlignment = Alignment.CenterHorizontally
             ) {
                 when {
-                    state.access == Access.NONE -> {
-                        EmptyState("让照片在这里相遇", "允许读取照片后，“全部”会直接展示手机中的图片，无需关联相册。", "允许访问照片", authorize)
+                    state.mediaAccess == Access.NONE -> {
+                        EmptyState("让照片在这里相遇", "允许读取照片后，“全部”会直接展示手机中的图片和视频，无需关联相册。", "允许访问照片", authorize)
                         TapTextButton(onClick = settings) { Text("前往系统设置") }
                     }
                     state.readError -> EmptyState("读取照片失败", "请检查照片权限后重新读取。", "重新读取", refresh)
-                    state.selectedAlbum == null -> EmptyState("还没有可查看的照片", "手机中暂无可访问的图片。新增照片后刷新，或检查照片访问权限。", "刷新照片", refresh)
-                    else -> EmptyState("该相册暂无可查看的照片", "相册可能为空，或其中的照片尚未获得访问授权。", "管理相册", add)
+                    state.selectedAlbum == null -> EmptyState("还没有可查看的内容", "手机中暂无可访问的照片或视频。新增内容后刷新，或检查照片访问权限。", "刷新照片", refresh)
+                    else -> EmptyState("该相册暂无可查看的内容", "相册可能为空，或其中的照片或视频尚未获得访问授权。", "管理相册", add)
                 }
             }
         }
@@ -241,7 +241,7 @@ fun ProfileScreen(
                             val cover = photos.firstOrNull { state.available(it) }
                             Surface(shape = MaterialTheme.shapes.small, color = MaterialTheme.colorScheme.secondaryContainer) {
                                 Box(Modifier.size(48.dp), contentAlignment = Alignment.Center) {
-                                    if (cover != null) PhotoImage(cover.uri, Modifier.fillMaxSize()) else Symbol(Glyph.FOLDER)
+                                    if (cover != null) PhotoImage(cover.uri, Modifier.fillMaxSize(), revision = cover.added, video = cover.isVideo) else Symbol(Glyph.FOLDER)
                                 }
                             }
                         },
@@ -258,8 +258,13 @@ fun ProfileScreen(
             ) {
                 items(visible, key = { it.uri }) { photo ->
                     val source = PhotoMotionKey(PhotoListOrigin.Favorites(selected), photo.uri)
-                    PhotoCard(photo, source, state.available(photo),
-                        if (state.access == Access.FULL) "原图已删除或不可读取" else "照片未授权或原图已删除",
+                    val missing = when {
+                        photo.isVideo && state.videoAccess == Access.FULL -> "原视频已删除或不可读取"
+                        photo.isVideo -> "视频未授权或原视频已删除"
+                        state.access == Access.FULL -> "原图已删除或不可读取"
+                        else -> "照片未授权或原图已删除"
+                    }
+                    PhotoCard(photo, source, state.available(photo), missing,
                         { open(photo, source) }, { menu(photo) })
                 }
             }

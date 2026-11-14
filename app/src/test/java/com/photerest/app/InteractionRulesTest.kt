@@ -19,4 +19,16 @@ class InteractionRulesTest {
         assertTrue(AppSettings().noTextMode)
         assertFalse(AppSettings(noTextMode = false).noTextMode)
     }
+
+    @Test fun videoAutoplayDefaultsOn() {
+        // Muted grid previews are on by default for upgrades too; the prefs key is absent on 1.3.1.
+        assertTrue(AppSettings().autoplayVideos)
+        assertFalse(AppSettings(autoplayVideos = false).autoplayVideos)
+    }
+
+    @Test fun videosAreShownByDefault() {
+        // Videos stay in the waterfalls until the new setting is turned off; old installs have no key.
+        assertTrue(AppSettings().showVideos)
+        assertFalse(AppSettings(showVideos = false).showVideos)
+    }
 }

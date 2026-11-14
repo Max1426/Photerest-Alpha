@@ -180,7 +180,7 @@ class PhoterestDeviceTest {
         feed.performTouchInput { swipeDown(startY = contentStart + 60f, endY = height * .8f, durationMillis = 800) }
         ui.waitUntil(10_000) { model.state.value.feed.map { it.uri } != second }
         settle()
-        val photo = model.state.value.feed.first { it.aspect >= .6f }
+        val photo = model.state.value.feed.first { it in fixturePhotos && it.aspect >= .6f }
         ui.onNodeWithTag("home-feed").performScrollToIndex(model.state.value.feed.indexOf(photo))
         ui.onNodeWithContentDescription("照片菜单：${photo.name}").performClick()
         ui.onNodeWithText("分享").assertExists(); ui.onNodeWithText("收藏").assertExists()
@@ -449,7 +449,7 @@ class PhoterestDeviceTest {
 
         model.settings.setDark(false)
         screenshot("chrome-home-light")
-        val last = model.state.value.feed.last()
+        val last = model.state.value.feed.last { it in fixturePhotos }
         grid.performScrollToIndex(model.state.value.feed.lastIndex)
         val menu = ui.onNodeWithContentDescription("照片菜单：${last.name}")
         val navigationTop = ui.onNodeWithContentDescription("个人账号").fetchSemanticsNode().boundsInRoot.top
@@ -734,6 +734,51 @@ class PhoterestDeviceTest {
         ui.onNodeWithText(hidden.name.substringBeforeLast('.')).assertDoesNotExist()
         ui.onNodeWithContentDescription("照片菜单：${hidden.name}").assertDoesNotExist()
         screenshot("no-text-home-restored")
+    }
+
+    @Test fun bottomNavigationButtonsBounceOnPress() {
+        val previousScale = shell("settings get global animator_duration_scale").trim().ifBlank { "1" }
+        shell("settings put global animator_duration_scale 1")
+        val evidence = File(context.getExternalFilesDir(null), "evidence").apply { mkdirs() }
+        try {
+            launch()
+            val home = ui.onNodeWithContentDescription("主页，刷新照片")
+            home.assertExists()
+            assertEquals("空闲时缩放应为 1", 1f, home.fetchSemanticsNode().config[NavPressScale], 0.02f)
+
+            ui.mainClock.autoAdvance = false
+            home.performTouchInput { down(center) }
+            var minScale = 1f
+            repeat(12) {
+                ui.mainClock.advanceTimeByFrame()
+                minScale = minOf(minScale, home.fetchSemanticsNode().config[NavPressScale])
+            }
+            assertTrue("按下应收缩，实际最小缩放 $minScale", minScale < 0.95f)
+            val pressed = instrumentation.uiAutomation.takeScreenshot()
+            File(evidence, "nav-bounce-pressed.png").outputStream().use { pressed.compress(Bitmap.CompressFormat.PNG, 100, it) }
+            pressed.recycle()
+
+            home.performTouchInput { up() }
+            var maxScale = 1f
+            repeat(45) {
+                ui.mainClock.advanceTimeByFrame()
+                val scale = home.fetchSemanticsNode().config[NavPressScale]
+                maxScale = maxOf(maxScale, scale)
+            }
+            assertTrue("回弹应出现过冲，实际峰值 $maxScale", maxScale > 1.0f)
+            ui.mainClock.autoAdvance = true
+            ui.waitForIdle()
+            assertEquals("回弹后应回到 1", 1f, home.fetchSemanticsNode().config[NavPressScale], 0.02f)
+
+            ui.onNodeWithContentDescription("个人账号").performClick()
+            ui.waitUntil(10_000) { ui.onAllNodesWithText("个人主页").fetchSemanticsNodes().isNotEmpty() }
+            assertEquals("切换后个人按钮应回到 1", 1f,
+                ui.onNodeWithContentDescription("个人账号").fetchSemanticsNode().config[NavPressScale], 0.02f)
+            screenshot("nav-bounce-switched")
+        } finally {
+            ui.mainClock.autoAdvance = true
+            shell("settings put global animator_duration_scale $previousScale")
+        }
     }
 
 }
