@@ -21,7 +21,8 @@ data class AppSettings(
     val haptics: Boolean = true,
     val dark: Boolean = true,
     val operationStyle: OperationStyle = OperationStyle.STANDARD,
-    val dynamicColor: Boolean = false
+    val dynamicColor: Boolean = false,
+    val noTextMode: Boolean = true
 )
 class SettingsStore(context: Context) {
     private val prefs = context.getSharedPreferences("appearance", Context.MODE_PRIVATE)
@@ -30,7 +31,8 @@ class SettingsStore(context: Context) {
         dark = prefs.getBoolean("dark", true),
         operationStyle = OperationStyle.entries.firstOrNull { it.name == prefs.getString("operation_style", null) }
             ?: OperationStyle.STANDARD,
-        dynamicColor = prefs.getBoolean("dynamic_color", false)
+        dynamicColor = prefs.getBoolean("dynamic_color", false),
+        noTextMode = prefs.getBoolean("no_text_mode", true)
     ))
     val state = mutable.asStateFlow()
     fun setHaptics(value: Boolean) { prefs.edit().putBoolean("haptics", value).apply(); mutable.value = mutable.value.copy(haptics = value) }
@@ -42,6 +44,10 @@ class SettingsStore(context: Context) {
     fun setDynamicColor(value: Boolean) {
         prefs.edit().putBoolean("dynamic_color", value).apply()
         mutable.value = mutable.value.copy(dynamicColor = value)
+    }
+    fun setNoTextMode(value: Boolean) {
+        prefs.edit().putBoolean("no_text_mode", value).apply()
+        mutable.value = mutable.value.copy(noTextMode = value)
     }
 }
 

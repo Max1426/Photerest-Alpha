@@ -11,26 +11,28 @@ import android.provider.Settings
 import android.widget.Toast
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.BackHandler
+import androidx.activity.compose.PredictiveBackHandler
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.compose.setContent
 import androidx.activity.enableEdgeToEdge
 import androidx.activity.SystemBarStyle
 import androidx.activity.result.contract.ActivityResultContracts
-import androidx.compose.animation.AnimatedContent
-import androidx.compose.animation.ExperimentalSharedTransitionApi
-import androidx.compose.animation.SharedTransitionLayout
-import androidx.compose.animation.core.tween
-import androidx.compose.animation.core.updateTransition
-import androidx.compose.animation.fadeIn
-import androidx.compose.animation.fadeOut
-import androidx.compose.animation.togetherWith
 import androidx.compose.foundation.layout.*
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
 import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.saveable.rememberSaveableStateHolder
 import androidx.compose.ui.graphics.toArgb
+import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.Modifier
+import androidx.compose.foundation.background
+import androidx.compose.ui.geometry.Offset
+import androidx.compose.ui.graphics.graphicsLayer
+import androidx.compose.ui.input.pointer.pointerInput
+import androidx.compose.ui.layout.onGloballyPositioned
+import androidx.compose.ui.layout.positionInRoot
+import androidx.compose.ui.semantics.hideFromAccessibility
+import kotlinx.coroutines.CancellationException
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalView
 import androidx.compose.ui.platform.LocalConfiguration
@@ -89,7 +91,6 @@ class MainActivity : ComponentActivity() {
             val colors = remember(settings.dark, settings.dynamicColor) { operationColors(this, settings) }
             val color = colors.background.toArgb()
             SideEffect {
-                enableEdgeToEdge(statusBarStyle = if (settings.dark) SystemBarStyle.dark(color) else SystemBarStyle.light(color,color), navigationBarStyle = if (settings.dark) SystemBarStyle.dark(color) else SystemBarStyle.light(color,color))
                 window.setBackgroundDrawable(android.graphics.drawable.ColorDrawable(color))
             }
             CompositionLocalProvider(
@@ -105,14 +106,26 @@ class MainActivity : ComponentActivity() {
     }
 }
 
-@OptIn(ExperimentalMaterial3Api::class, ExperimentalSharedTransitionApi::class)
+@Composable
+private fun AppWindowBars(browser: Boolean) {
+    val activity = LocalContext.current as ComponentActivity
+    val dark = LocalAppAppearance.current?.dark ?: true
+    val color = if (browser) android.graphics.Color.TRANSPARENT else MaterialTheme.colorScheme.background.toArgb()
+    SideEffect {
+        val bars = if (dark) SystemBarStyle.dark(color) else SystemBarStyle.light(color, color)
+        activity.enableEdgeToEdge(statusBarStyle = bars, navigationBarStyle = bars)
+    }
+}
+
+@OptIn(ExperimentalMaterial3Api::class)
 @Composable
 fun PhoterestApp(model: PhotoModel, dailyOpen: DailyOpenRequest? = null) {
     val state by model.state.collectAsState()
     val context = LocalContext.current
     val scope = rememberCoroutineScope()
     var profilePage by rememberSaveable { mutableStateOf(false) }
-    var detail by remember { mutableStateOf<PhotoDetail?>(null) }
+    val motion = remember(scope) { PhotoMotion(scope) }
+    val detail = motion.detail
     var actions by remember { mutableStateOf<Photo?>(null) }
     var favorite by remember { mutableStateOf<Photo?>(null) }
     var pendingFavorite by remember { mutableStateOf<Photo?>(null) }
@@ -139,7 +152,8 @@ fun PhoterestApp(model: PhotoModel, dailyOpen: DailyOpenRequest? = null) {
         if (dailyOpen != null && state.ready && !state.busy && handledDaily != dailyOpen.sequence) {
             handledDaily = dailyOpen.sequence
             settingsRoute = null; actions = null; info = null; favorite = null; showImport = false
-            detail = PhotoDetail(dailyOpen.photo)
+            editProfile = false; pendingFavorite = null
+            motion.open(dailyOpen.photo, null, fromNotification = true)
         }
     }
     fun refreshHome() { scope.launch { model.reload(true).join(); scrollRequest++ } }
@@ -173,78 +187,101 @@ fun PhoterestApp(model: PhotoModel, dailyOpen: DailyOpenRequest? = null) {
     LaunchedEffect(state.message) { state.message?.let { Toast.makeText(context, it, Toast.LENGTH_SHORT).show(); model.message(null) } }
     val saveableState = rememberSaveableStateHolder()
     val feedback = LocalTapFeedback.current
-    val navigation = updateTransition(detail, label = "照片详情")
-    val navigating = navigation.isRunning || navigation.currentState != navigation.targetState
-    BackHandler(enabled = detail != null || navigating || profilePage) {
-        if (detail != null) detail = null else if (!navigating) profilePage = false
+    fun sourceAvailable(scene: PhotoDetail): Boolean {
+        if (!state.available(scene.photo)) return false
+        return when (val origin = scene.source?.origin) {
+            is PhotoListOrigin.Album -> !profilePage && state.selectedAlbum == origin.id && state.feed.any { it.uri == scene.photo.uri }
+            is PhotoListOrigin.Favorites -> profilePage && state.isFavorite(scene.photo) &&
+                (origin.folderId == null || state.memberships.any { it.uri == scene.photo.uri && it.folderId == origin.folderId })
+            null -> false
+        }
+    }
+    val sourceCheck by rememberUpdatedState(::sourceAvailable)
+    val modalOpen = settingsRoute != null || showImport || actions != null || editProfile || favorite != null || info != null
+    val modalVisible by rememberUpdatedState(modalOpen)
+    AppWindowBars(browser = detail == null || motion.busy)
+    BackHandler(enabled = detail == null && profilePage && !modalOpen) { profilePage = false }
+    PredictiveBackHandler(enabled = detail != null && !modalOpen) { events ->
+        val scene = motion.detail ?: return@PredictiveBackHandler
+        if (modalVisible) return@PredictiveBackHandler
+        try {
+            events.collect { motion.seekBack(scene, it.progress, sourceCheck(scene)) }
+            motion.close(scene, sourceCheck(scene))
+        } catch (cancelled: CancellationException) {
+            motion.cancelBack(scene)
+            throw cancelled
+        }
     }
     fun openPhoto(photo: Photo, source: PhotoMotionKey) {
-        if (detail != null) return
-        val thumbnail = PhotoBitmaps.peek(photo.uri, photo.added)
-        detail = PhotoDetail(photo, source.takeIf { state.available(photo) && thumbnail != null }, thumbnail)
+        motion.open(photo, source.takeIf { state.available(photo) })
     }
+    var rootOrigin by remember { mutableStateOf(Offset.Zero) }
     OperationTheme {
-        SharedTransitionLayout(Modifier.fillMaxSize()) {
-            navigation.AnimatedContent(
-                modifier = Modifier.fillMaxSize(),
-                transitionSpec = {
-                    val opening = targetState != null
-                    val shared = (targetState ?: initialState)?.let {
-                        it.source != null && state.available(it.photo)
-                    } == true
-                    val enter = fadeIn(tween(160, delayMillis = if (opening && shared) 140 else 0))
-                    val exit = fadeOut(tween(if (shared) 210 else 150))
-                    (enter togetherWith exit).using(null)
-                }
-            ) { scene ->
-                val motion = PhotoMotion(this@SharedTransitionLayout, this, opening = detail != null)
-                CompositionLocalProvider(LocalPhotoMotion provides motion) {
-                    if (scene != null) {
-                        val photo = scene.photo
-                        DetailScreen(scene, state.available(photo), state.isFavorite(photo), { detail = null },
-                            { collect(photo) }, { share(photo) }, { info = photo }, { openOriginal(photo) },
-                            if (state.access == Access.FULL) "原图已删除或不可读取" else "照片访问受限，请重新授权",
-                            { authorize() }, navigating)
-                    } else {
-                        Scaffold(
-                            contentWindowInsets = WindowInsets.safeDrawing.only(WindowInsetsSides.Horizontal),
-                            bottomBar = {
-                                NavigationBar {
-                                    NavigationBarItem(
-                                        selected = !profilePage,
-                                        onClick = {
-                                            feedback.perform()
-                                            if (profilePage) profilePage = false else refreshHome()
-                                        },
-                                        icon = { Symbol(Glyph.HOME) },
-                                        label = { Text("主页") },
-                                        modifier = Modifier.semantics { contentDescription = "主页，刷新照片" }
-                                    )
-                                    NavigationBarItem(
-                                        selected = profilePage,
-                                        onClick = { feedback.perform(); profilePage = true },
-                                        icon = {
-                                            if (state.avatar == null) Symbol(Glyph.USER)
-                                            else Avatar(state.avatar, state.profileName, Modifier.size(24.dp))
-                                        },
-                                        label = { Text("个人") },
-                                        modifier = Modifier.semantics { contentDescription = "个人账号" }
-                                    )
-                                }
-                            }
-                        ) { padding ->
-                            Box(Modifier.fillMaxSize().padding(padding).consumeWindowInsets(padding)) {
-                                if (!profilePage) key(state.selectedAlbum) {
-                                    HomeScreen(state, viewport, { showImport = true }, { authorize() }, { openSettings() },
-                                        model::selectAlbum, { refreshHome() }, ::openPhoto, { actions = it })
-                                } else saveableState.SaveableStateProvider("profile") {
-                                    ProfileScreen(state, { editProfile = true }, { settingsRoute = SettingsRoute.MAIN },
-                                        ::openPhoto, { actions = it }, model)
-                                }
-                            }
+        Box(Modifier.fillMaxSize().onGloballyPositioned { rootOrigin = it.positionInRoot() }) {
+            CompositionLocalProvider(LocalPhotoMotion provides motion) {
+                Box(Modifier.fillMaxSize().graphicsLayer { alpha = if (motion.progress == 1f && motion.flight == null) 0f else 1f }
+                    .semantics { if (detail != null) hideFromAccessibility() }) {
+                    val bottomBar: @Composable () -> Unit = {
+                        NavigationBar(
+                            containerColor = Color.Transparent,
+                            tonalElevation = 0.dp,
+                            windowInsets = WindowInsets.navigationBars.union(WindowInsets.displayCutout)
+                                .only(WindowInsetsSides.Bottom)
+                        ) {
+                            NavigationBarItem(
+                                selected = !profilePage,
+                                onClick = {
+                                    feedback.perform()
+                                    if (profilePage) profilePage = false else refreshHome()
+                                },
+                                icon = { Symbol(Glyph.HOME) },
+                                label = { Text("主页") },
+                                modifier = Modifier.semantics { contentDescription = "主页，刷新照片" }
+                            )
+                            NavigationBarItem(
+                                selected = profilePage,
+                                onClick = { feedback.perform(); profilePage = true },
+                                icon = {
+                                    if (state.avatar == null) Symbol(Glyph.USER)
+                                    else Avatar(state.avatar, state.profileName, Modifier.size(24.dp))
+                                },
+                                label = { Text("个人") },
+                                modifier = Modifier.semantics { contentDescription = "个人账号" }
+                            )
                         }
                     }
+                    if (!profilePage) key(state.selectedAlbum) {
+                        HomeScreen(state, viewport, { showImport = true }, { authorize() }, { openSettings() },
+                            model::selectAlbum, { refreshHome() }, ::openPhoto, { actions = it }, bottomBar)
+                    } else saveableState.SaveableStateProvider("profile") {
+                        ProfileScreen(state, { editProfile = true }, { settingsRoute = SettingsRoute.MAIN },
+                            ::openPhoto, { actions = it }, model, bottomBar)
+                    }
                 }
+            }
+            if (detail != null) key(detail) {
+                val photo = detail.photo
+                val available = state.available(photo)
+                val returnTargetAvailable = sourceAvailable(detail)
+                LaunchedEffect(detail, detail.viewport != null, available) {
+                    if (detail.viewport != null || !available) motion.enter(detail, available)
+                }
+                LaunchedEffect(detail, returnTargetAvailable) {
+                    if (!returnTargetAvailable) motion.invalidateSource(detail)
+                }
+                Box(Modifier.fillMaxSize().pointerInput(Unit) {
+                    awaitPointerEventScope { while (true) awaitPointerEvent() }
+                }) {
+                    Box(Modifier.matchParentSize().graphicsLayer { alpha = motion.progress }
+                        .background(MaterialTheme.colorScheme.background))
+                    DetailScreen(detail, motion, available, state.isFavorite(photo),
+                        { motion.close(detail, sourceAvailable(detail)) },
+                        { if (!motion.busy) collect(photo) }, { if (!motion.busy) share(photo) },
+                        { if (!motion.busy) info = photo }, { if (!motion.busy) openOriginal(photo) },
+                        if (state.access == Access.FULL) "原图已删除或不可读取" else "照片访问受限，请重新授权",
+                        { authorize() })
+                }
+                motion.flight?.let { PhotoFlightOverlay(it, { motion.progress }, { rootOrigin }) }
             }
         }
 

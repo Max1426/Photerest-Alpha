@@ -5,10 +5,13 @@ import androidx.compose.foundation.gestures.detectTransformGestures
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
+import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.foundation.lazy.staggeredgrid.*
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.material3.*
 import androidx.compose.material3.pulltorefresh.PullToRefreshBox
+import androidx.compose.material3.pulltorefresh.PullToRefreshDefaults
+import androidx.compose.material3.pulltorefresh.rememberPullToRefreshState
 import androidx.compose.runtime.*
 import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.foundation.verticalScroll
@@ -20,8 +23,12 @@ import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.draw.clipToBounds
+import androidx.compose.ui.draw.drawWithContent
+import androidx.compose.ui.layout.boundsInRoot
+import androidx.compose.ui.layout.onGloballyPositioned
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.platform.LocalDensity
+import androidx.compose.ui.platform.LocalWindowInfo
 import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
@@ -35,33 +42,55 @@ import kotlin.math.roundToInt
 fun HomeScreen(
     state: PhotoState, viewport: TabViewport, add: () -> Unit, authorize: () -> Unit,
     settings: () -> Unit, select: (String?) -> Unit, refresh: () -> Unit,
-    open: (Photo, PhotoMotionKey) -> Unit, menu: (Photo) -> Unit
+    open: (Photo, PhotoMotionKey) -> Unit, menu: (Photo) -> Unit,
+    bottomBar: @Composable () -> Unit
 ) {
     val feedback = LocalTapFeedback.current
     val selectedIndex = state.imported.indexOfFirst { it.id == state.selectedAlbum } + 1
-    Column(Modifier.fillMaxSize()) {
-        LabTopBar(stringResource(R.string.app_name), actions = { GlyphButton(Glyph.PLUS, "导入相册", action = add) })
-        PrimaryScrollableTabRow(selectedTabIndex = selectedIndex, edgePadding = 8.dp) {
-            AlbumTab("全部", selectedIndex == 0, state.switching && state.pendingAlbum == null) {
-                feedback.perform()
-                select(null)
-            }
-            state.imported.forEachIndexed { index, album ->
-                AlbumTab(album.name, selectedIndex == index + 1, state.switching && state.pendingAlbum == album.id) {
-                    feedback.perform()
-                    select(album.id)
+    BrowserChrome(
+        header = {
+            Column {
+                LabTopBar(stringResource(R.string.app_name), transparent = true, actions = { GlyphButton(Glyph.PLUS, "导入相册", action = add) })
+                PrimaryScrollableTabRow(
+                    selectedTabIndex = selectedIndex, edgePadding = 8.dp,
+                    containerColor = Color.Transparent, divider = {}
+                ) {
+                    AlbumTab("全部", selectedIndex == 0, state.switching && state.pendingAlbum == null) {
+                        feedback.perform()
+                        select(null)
+                    }
+                    state.imported.forEachIndexed { index, album ->
+                        AlbumTab(album.name, selectedIndex == index + 1, state.switching && state.pendingAlbum == album.id) {
+                            feedback.perform()
+                            select(album.id)
+                        }
+                    }
+                }
+                if (state.access == Access.PARTIAL) {
+                    TapTextButton(onClick = authorize) { Text("仅显示已授权照片 · 管理访问范围") }
                 }
             }
-        }
-        if (state.access == Access.PARTIAL) {
-            TapTextButton(onClick = authorize) { Text("仅显示已授权照片 · 管理访问范围") }
-        }
+        },
+        navigation = bottomBar,
+        scrollState = viewport.grid,
+        scrollLayout = { viewport.grid.layoutInfo }
+    ) { insets ->
         if (state.ready && state.access != Access.NONE && !state.readError && state.feed.isNotEmpty()) {
-            PullToRefreshBox(isRefreshing = state.refreshing, onRefresh = refresh, modifier = Modifier.fillMaxSize()) {
+            val refreshState = rememberPullToRefreshState()
+            PullToRefreshBox(
+                isRefreshing = state.refreshing, onRefresh = refresh, state = refreshState,
+                modifier = Modifier.fillMaxSize(),
+                indicator = {
+                    PullToRefreshDefaults.Indicator(
+                        modifier = Modifier.align(Alignment.TopCenter).offset(y = insets.top + insets.fade),
+                        isRefreshing = state.refreshing, state = refreshState
+                    )
+                }
+            ) {
                 LazyVerticalStaggeredGrid(
                     columns = StaggeredGridCells.Fixed(2), state = viewport.grid,
                     horizontalArrangement = Arrangement.spacedBy(8.dp), verticalItemSpacing = 8.dp,
-                    contentPadding = PaddingValues(8.dp),
+                    contentPadding = insets.listPadding(8.dp),
                     modifier = Modifier.fillMaxSize().testTag("home-feed")
                 ) {
                     items(state.feed, key = { it.uri }) { photo ->
@@ -71,10 +100,10 @@ fun HomeScreen(
                 }
             }
         } else if (!state.ready) {
-            Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) { CircularProgressIndicator() }
+            Box(Modifier.fillMaxSize().padding(insets.bars), contentAlignment = Alignment.Center) { CircularProgressIndicator() }
         } else {
             Column(
-                Modifier.fillMaxSize().verticalScroll(rememberScrollState()),
+                Modifier.fillMaxSize().padding(insets.bars).verticalScroll(rememberScrollState()),
                 horizontalAlignment = Alignment.CenterHorizontally
             ) {
                 when {
@@ -105,6 +134,7 @@ private fun AlbumTab(name: String, selected: Boolean, loading: Boolean, click: (
 @Composable
 private fun LabTopBar(
     title: String,
+    transparent: Boolean = false,
     navigationIcon: @Composable () -> Unit = {},
     actions: @Composable RowScope.() -> Unit = {}
 ) {
@@ -117,13 +147,18 @@ private fun LabTopBar(
             )
         },
         navigationIcon = navigationIcon,
-        actions = actions
+        actions = actions,
+        colors = if (transparent) TopAppBarDefaults.topAppBarColors(containerColor = Color.Transparent)
+        else TopAppBarDefaults.topAppBarColors()
     )
 }
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
-fun ProfileScreen(state: PhotoState, edit: () -> Unit, settings: () -> Unit, open: (Photo, PhotoMotionKey) -> Unit, menu: (Photo) -> Unit, model: PhotoModel) {
+fun ProfileScreen(
+    state: PhotoState, edit: () -> Unit, settings: () -> Unit, open: (Photo, PhotoMotionKey) -> Unit,
+    menu: (Photo) -> Unit, model: PhotoModel, bottomBar: @Composable () -> Unit
+) {
     var foldersTab by rememberSaveable { mutableStateOf(false) }
     var selected by rememberSaveable { mutableStateOf<Long?>(null) }
     var newFolder by remember { mutableStateOf(false) }
@@ -132,35 +167,62 @@ fun ProfileScreen(state: PhotoState, edit: () -> Unit, settings: () -> Unit, ope
     var delete by remember { mutableStateOf<Folder?>(null) }
     LaunchedEffect(state.folders) { if (selected != null && state.folders.none { it.id == selected }) selected = null }
     val visible = if (selected == null) state.favorites else state.favorites.filter { p -> state.memberships.any { it.uri == p.uri && it.folderId == selected } }
-    Column(Modifier.fillMaxSize()) {
-        val feedback = LocalTapFeedback.current
-        LabTopBar("个人主页", actions = {
-            GlyphButton(Glyph.EDIT, if (state.profileName == null) "创建档案" else "编辑资料", action = edit)
-            GlyphButton(Glyph.SETTINGS, "设置", action = settings)
-        })
-        ElevatedCard(
-            onClick = { feedback.perform(); edit() },
-            modifier = Modifier.fillMaxWidth().padding(horizontal = 12.dp, vertical = 8.dp)
-        ) {
-            Row(
-                Modifier.fillMaxWidth().padding(12.dp), verticalAlignment = Alignment.CenterVertically,
-                horizontalArrangement = Arrangement.spacedBy(12.dp)
-            ) {
-                Avatar(state.avatar, state.profileName, Modifier.size(56.dp))
-                Column(Modifier.weight(1f)) {
-                    Text(state.profileName ?: "你的 Photerest", style = MaterialTheme.typography.titleLarge, maxLines = 2, overflow = TextOverflow.Ellipsis)
-                    Text("${state.favorites.size} 张收藏 · ${state.folders.size} 个收藏夹", color = Muted, style = MaterialTheme.typography.bodyMedium)
+    val feedback = LocalTapFeedback.current
+    val windowHeight = LocalWindowInfo.current.containerSize.height
+    val compact = with(LocalDensity.current) { windowHeight.toDp() < 420.dp }
+    val folderScroll = rememberLazyListState()
+    val photoScroll = key(selected) { rememberLazyStaggeredGridState() }
+    BrowserChrome(
+        header = {
+            Column {
+                LabTopBar("个人主页", transparent = true, actions = {
+                    GlyphButton(Glyph.EDIT, if (state.profileName == null) "创建档案" else "编辑资料", action = edit)
+                    GlyphButton(Glyph.SETTINGS, "设置", action = settings)
+                })
+                ElevatedCard(
+                    onClick = { feedback.perform(); edit() },
+                    modifier = Modifier.fillMaxWidth().padding(horizontal = 12.dp, vertical = if (compact) 4.dp else 8.dp)
+                ) {
+                    Row(
+                        Modifier.fillMaxWidth().padding(if (compact) 8.dp else 12.dp),
+                        verticalAlignment = Alignment.CenterVertically,
+                        horizontalArrangement = Arrangement.spacedBy(12.dp)
+                    ) {
+                        Avatar(state.avatar, state.profileName, Modifier.size(if (compact) 36.dp else 56.dp))
+                        Column(Modifier.weight(1f)) {
+                            Text(state.profileName ?: "你的 Photerest", style = MaterialTheme.typography.titleLarge, maxLines = if (compact) 1 else 2, overflow = TextOverflow.Ellipsis)
+                            Text("${state.favorites.size} 张收藏 · ${state.folders.size} 个收藏夹", color = Muted, style = MaterialTheme.typography.bodyMedium)
+                        }
+                    }
+                }
+                PrimaryTabRow(
+                    selectedTabIndex = if (foldersTab) 1 else 0, containerColor = Color.Transparent, divider = {}
+                ) {
+                    Tab(selected = !foldersTab, onClick = { feedback.perform(); foldersTab = false; selected = null }, text = { Text("我收藏的图片", maxLines = 2) })
+                    Tab(selected = foldersTab, onClick = { feedback.perform(); foldersTab = true }, text = { Text("收藏夹", maxLines = 2) })
+                }
+                if (!foldersTab) selected?.let { id ->
+                    Row(Modifier.padding(horizontal = 18.dp), verticalAlignment = Alignment.CenterVertically) {
+                        Text(state.folders.find { it.id == id }?.name ?: "收藏夹", fontSize = 15.sp, color = Muted, modifier = Modifier.weight(1f))
+                        TapTextButton(onClick = { selected = null }) { Text("查看全部") }
+                    }
                 }
             }
-        }
-        PrimaryTabRow(selectedTabIndex = if (foldersTab) 1 else 0) {
-            Tab(selected = !foldersTab, onClick = { feedback.perform(); foldersTab = false; selected = null }, text = { Text("我收藏的图片", maxLines = 2) })
-            Tab(selected = foldersTab, onClick = { feedback.perform(); foldersTab = true }, text = { Text("收藏夹", maxLines = 2) })
-        }
-        Spacer(Modifier.height(8.dp))
-        if (state.profileName == null) EmptyState("建立你的照片收藏", "设置昵称和头像，开始整理自己的收藏夹。", "创建个人档案", edit)
-        else if (foldersTab) {
-            LazyColumn(contentPadding = PaddingValues(horizontal = 12.dp, vertical = 8.dp)) {
+        },
+        navigation = bottomBar,
+        scrollState = if (foldersTab) folderScroll else photoScroll,
+        scrollLayout = { if (foldersTab) folderScroll.layoutInfo else photoScroll.layoutInfo }
+    ) { insets ->
+        if (state.profileName == null || (!foldersTab && visible.isEmpty())) {
+            Column(Modifier.fillMaxSize().padding(insets.bars).verticalScroll(rememberScrollState())) {
+                if (state.profileName == null) {
+                    EmptyState("建立你的照片收藏", "设置昵称和头像，开始整理自己的收藏夹。", "创建个人档案", edit)
+                } else {
+                    EmptyState("还没有收藏照片", "在照片菜单或大图页点击收藏，照片就会出现在这里。")
+                }
+            }
+        } else if (foldersTab) {
+            LazyColumn(state = folderScroll, contentPadding = insets.listPadding(12.dp), modifier = Modifier.fillMaxSize()) {
                 item {
                     Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.End) {
                         TapTextButton(onClick = { newFolder = true }) {
@@ -189,21 +251,16 @@ fun ProfileScreen(state: PhotoState, edit: () -> Unit, settings: () -> Unit, ope
                 }
             }
         } else {
-            selected?.let { id -> Row(Modifier.padding(horizontal = 18.dp), verticalAlignment = Alignment.CenterVertically) {
-                Text(state.folders.find { it.id == id }?.name ?: "收藏夹", fontSize = 15.sp, color = Muted, modifier = Modifier.weight(1f))
-                TapTextButton(onClick = { selected = null }) { Text("查看全部") }
-            } }
-            if (visible.isEmpty()) EmptyState("还没有收藏照片", "在照片菜单或大图页点击收藏，照片就会出现在这里。")
-            else {
-                val photoScroll = rememberLazyStaggeredGridState()
-
-                LazyVerticalStaggeredGrid(state = photoScroll, columns = StaggeredGridCells.Fixed(2), horizontalArrangement = Arrangement.spacedBy(8.dp), verticalItemSpacing = 8.dp, contentPadding = PaddingValues(start = 8.dp, end = 8.dp, bottom = 8.dp), modifier = Modifier.fillMaxSize()) {
-                    items(visible, key = { it.uri }) { photo ->
-                        val source = PhotoMotionKey(PhotoListOrigin.Favorites(selected), photo.uri)
-                        PhotoCard(photo, source, state.available(photo),
-                            if (state.access == Access.FULL) "原图已删除或不可读取" else "照片未授权或原图已删除",
-                            { open(photo, source) }, { menu(photo) })
-                    }
+            LazyVerticalStaggeredGrid(
+                state = photoScroll, columns = StaggeredGridCells.Fixed(2),
+                horizontalArrangement = Arrangement.spacedBy(8.dp), verticalItemSpacing = 8.dp,
+                contentPadding = insets.listPadding(8.dp), modifier = Modifier.fillMaxSize().testTag("profile-photos")
+            ) {
+                items(visible, key = { it.uri }) { photo ->
+                    val source = PhotoMotionKey(PhotoListOrigin.Favorites(selected), photo.uri)
+                    PhotoCard(photo, source, state.available(photo),
+                        if (state.access == Access.FULL) "原图已删除或不可读取" else "照片未授权或原图已删除",
+                        { open(photo, source) }, { menu(photo) })
                 }
             }
         }
@@ -242,26 +299,27 @@ fun ProfileScreen(state: PhotoState, edit: () -> Unit, settings: () -> Unit, ope
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
 internal fun DetailScreen(
-    detail: PhotoDetail, available: Boolean, favorite: Boolean, back: () -> Unit,
+    detail: PhotoDetail, motion: PhotoMotion, available: Boolean, favorite: Boolean, back: () -> Unit,
     collect: () -> Unit, share: () -> Unit, info: () -> Unit,
-    openOriginal: () -> Unit, missing: String, authorize: () -> Unit, navigating: Boolean
+    openOriginal: () -> Unit, missing: String, authorize: () -> Unit
 ) {
     val photo = detail.photo
-    var scale by remember(photo.uri) { mutableFloatStateOf(1f) }
-    var offset by remember(photo.uri) { mutableStateOf(Offset.Zero) }
-    var entered by remember(detail) { mutableStateOf(false) }
-    LaunchedEffect(navigating) { if (!navigating) entered = true }
+    val navigating = motion.busy
+    val toolbar = Modifier.graphicsLayer { alpha = motion.chromeAlpha }
     val feedback = LocalTapFeedback.current
     Scaffold(
+        containerColor = Color.Transparent,
         topBar = {
-            LabTopBar(
-                photo.name,
-                navigationIcon = { GlyphButton(Glyph.BACK, "返回照片流", action = back) },
-                actions = { GlyphButton(Glyph.MORE, "照片信息", action = info) }
-            )
+            Box(toolbar) {
+                LabTopBar(
+                    photo.name,
+                    navigationIcon = { GlyphButton(Glyph.BACK, "返回照片流", action = back) },
+                    actions = { GlyphButton(Glyph.MORE, "照片信息", action = info) }
+                )
+            }
         },
         bottomBar = {
-            BottomAppBar(contentPadding = PaddingValues(horizontal = 8.dp)) {
+            BottomAppBar(modifier = toolbar, contentPadding = PaddingValues(horizontal = 8.dp)) {
                 GlyphButton(Glyph.SHARE, "分享照片", action = share)
                 GlyphButton(Glyph.IMAGE_UP, "在相册中打开原图", action = openOriginal)
                 Spacer(Modifier.weight(1f))
@@ -273,7 +331,9 @@ internal fun DetailScreen(
             }
         }
     ) { padding ->
-        BoxWithConstraints(Modifier.fillMaxSize().padding(padding).consumeWindowInsets(padding).clipToBounds()) {
+        BoxWithConstraints(Modifier.fillMaxSize().padding(padding).consumeWindowInsets(padding).clipToBounds()
+            .onGloballyPositioned { detail.viewport = it.boundsInRoot() }
+            .graphicsLayer { alpha = if (motion.flight == null) motion.progress else 0f }) {
             val density = LocalDensity.current
             val widthPx = with(density) { maxWidth.toPx() }
             val heightPx = with(density) { maxHeight.toPx() }
@@ -283,22 +343,22 @@ internal fun DetailScreen(
                 Box(Modifier.fillMaxSize().pointerInput(photo.uri, fitWidth, fitHeight, navigating) {
                     detectTransformGestures { _, pan, zoom, _ ->
                         if (navigating) return@detectTransformGestures
-                        scale = (scale * zoom).coerceIn(1f, 5f)
-                        val maxX = ((fitWidth * scale - widthPx) / 2).coerceAtLeast(0f)
-                        val maxY = ((fitHeight * scale - heightPx) / 2).coerceAtLeast(0f)
-                        offset = Offset((offset.x + pan.x).coerceIn(-maxX, maxX), (offset.y + pan.y).coerceIn(-maxY, maxY))
+                        detail.scale = (detail.scale * zoom).coerceIn(1f, 5f)
+                        val maxX = ((fitWidth * detail.scale - widthPx) / 2).coerceAtLeast(0f)
+                        val maxY = ((fitHeight * detail.scale - heightPx) / 2).coerceAtLeast(0f)
+                        detail.pan = Offset((detail.pan.x + pan.x).coerceIn(-maxX, maxX), (detail.pan.y + pan.y).coerceIn(-maxY, maxY))
                     }
                 }.pointerInput(photo.uri, navigating) {
                     detectTapGestures(onDoubleTap = {
                         if (navigating) return@detectTapGestures
-                        scale = if (scale > 1f) 1f else 2.5f
-                        offset = Offset.Zero
+                        detail.scale = if (detail.scale > 1f) 1f else 2.5f
+                        detail.pan = Offset.Zero
                     })
                 }) {
-                    val imageWidth = fitWidth * scale
-                    val imageHeight = fitHeight * scale
-                    val imageLeft = (widthPx - imageWidth) / 2 + offset.x
-                    val imageTop = (heightPx - imageHeight) / 2 + offset.y
+                    val imageWidth = fitWidth * detail.scale
+                    val imageHeight = fitHeight * detail.scale
+                    val imageLeft = (widthPx - imageWidth) / 2 + detail.pan.x
+                    val imageTop = (heightPx - imageHeight) / 2 + detail.pan.y
                     val left = imageLeft.coerceIn(0f, widthPx - 1f)
                     val top = imageTop.coerceIn(0f, heightPx - 1f)
                     val visibleWidth = (minOf(imageLeft + imageWidth, widthPx) - left).coerceAtLeast(1f)
@@ -308,9 +368,9 @@ internal fun DetailScreen(
                         photo.uri,
                         Modifier.absoluteOffset { IntOffset(left.roundToInt(), top.roundToInt()) }
                             .size(with(density) { visibleWidth.toDp() }, with(density) { visibleHeight.toDp() })
-                            .then(photoBounds(detail.source)).clipToBounds(),
+                            .clipToBounds(),
                         large = true, revision = photo.added, scale = ContentScale.FillBounds,
-                        thumbnail = detail.thumbnail, preferThumbnail = !entered,
+                        thumbnail = detail.thumbnail, onBitmap = { detail.bitmap = it },
                         imageModifier = Modifier.graphicsLayer {
                             scaleX = imageWidth / visibleWidth
                             scaleY = imageHeight / visibleHeight

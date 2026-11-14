@@ -55,6 +55,15 @@ internal fun SettingsScreen(store: SettingsStore, dismiss: () -> Unit, daily: ()
                     summary = if (dynamicSupported) "使用系统动态色" else "系统动态色需要 Android 12 或更新版本",
                     trailing = { Switch(useDynamic, onCheckedChange = null, enabled = dynamicSupported) }
                 )
+                OperationItem(
+                    "无字模式",
+                    Modifier.testTag("no-text-mode-switch").toggleable(settings.noTextMode, role = Role.Switch) {
+                        feedback.perform()
+                        store.setNoTextMode(it)
+                    },
+                    summary = if (settings.noTextMode) "隐藏照片下方的文件名和菜单，只显示照片。" else "照片下方显示文件名和“···”菜单。",
+                    trailing = { Switch(settings.noTextMode, onCheckedChange = null) }
+                )
             }
             OperationGroup("偏好") {
                 OperationItem(

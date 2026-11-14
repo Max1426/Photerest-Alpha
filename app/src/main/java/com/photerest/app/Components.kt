@@ -11,9 +11,11 @@ import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.draw.drawWithContent
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.asImageBitmap
 import androidx.compose.ui.layout.ContentScale
+import androidx.compose.ui.layout.onGloballyPositioned
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.res.painterResource
 import androidx.compose.ui.platform.testTag
@@ -61,13 +63,15 @@ fun GlyphButton(glyph: Glyph, description: String, modifier: Modifier = Modifier
 fun PhotoImage(
     uri: String, modifier: Modifier = Modifier, large: Boolean = false, revision: Long = 0,
     scale: ContentScale = ContentScale.Crop, thumbnail: Bitmap? = null, preferThumbnail: Boolean = false,
-    imageModifier: Modifier = Modifier
+    imageModifier: Modifier = Modifier,
+    onBitmap: ((Bitmap?) -> Unit)? = null
 ) {
     val context = LocalContext.current
     var bitmap by remember(uri, large, revision) { mutableStateOf<Bitmap?>(if (large) null else PhotoBitmaps.peek(uri, revision)) }
     LaunchedEffect(uri, large, revision) { if (bitmap == null) bitmap = PhotoBitmaps.load(context, uri, large, revision) }
     // A failed or loading source always keeps the layout stable.
     val preview = if (preferThumbnail) thumbnail ?: bitmap else bitmap ?: thumbnail
+    SideEffect { onBitmap?.invoke(preview) }
     Box(modifier.background(if (large) MaterialTheme.colorScheme.background else Panel), contentAlignment = Alignment.Center) {
         if (preview != null) Image(preview.asImageBitmap(), contentDescription = null, modifier = Modifier.fillMaxSize().then(imageModifier).testTag("bitmap-$uri"), contentScale = scale)
         else Symbol(Glyph.FOLDER, Modifier.size(28.dp), Muted)
@@ -76,19 +80,29 @@ fun PhotoImage(
 
 @Composable
 fun PhotoCard(photo: Photo, source: PhotoMotionKey, available: Boolean = true, missingText: String = "原图无法访问", open: () -> Unit, menu: () -> Unit) {
+    val motion = LocalPhotoMotion.current
+    // Absent preferences fall back to the app default: the text-free grid is on.
+    val noText = LocalAppAppearance.current?.noTextMode ?: true
+    val tracked = remember(source, photo.added, available) { PhotoCardSource() }
+    DisposableEffect(motion, source, tracked) {
+        motion?.track(source, tracked)
+        onDispose { motion?.untrack(source, tracked) }
+    }
     ElevatedCard {
         Box(Modifier.fillMaxWidth().aspectRatio(photo.aspect.coerceIn(0.12f, 6f)).tapClickable(onClick = open).semantics { contentDescription = "查看照片：${photo.name}" }) {
             if (available) PhotoImage(
-                photo.uri, Modifier.fillMaxSize().then(photoBounds(source))
+                photo.uri, Modifier.fillMaxSize()
+                    .onGloballyPositioned { tracked.coordinates = it }
+                    .drawWithContent { if (motion?.flight?.key != source) drawContent() }
                     .clip(RoundedCornerShape(topStart = 12.dp, topEnd = 12.dp)),
-                revision = photo.added
+                revision = photo.added, onBitmap = { tracked.bitmap = it }
             )
             else Column(Modifier.fillMaxSize().background(Panel).padding(12.dp), horizontalAlignment = Alignment.CenterHorizontally, verticalArrangement = Arrangement.Center) {
                 Symbol(Glyph.INFO, color = Muted)
                 Spacer(Modifier.height(8.dp)); Text(missingText, fontSize = 12.sp, color = Muted, textAlign = TextAlign.Center)
             }
         }
-        Row(Modifier.fillMaxWidth().padding(start = 6.dp), verticalAlignment = Alignment.CenterVertically) {
+        if (!noText) Row(Modifier.fillMaxWidth().padding(start = 6.dp), verticalAlignment = Alignment.CenterVertically) {
             Text(photo.name.substringBeforeLast('.').ifBlank { photo.name }, Modifier.weight(1f), maxLines = 1, overflow = TextOverflow.Ellipsis, style = MaterialTheme.typography.bodyMedium)
             GlyphButton(Glyph.MORE, "照片菜单：${photo.name}", action = menu)
         }
