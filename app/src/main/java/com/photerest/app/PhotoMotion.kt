@@ -33,6 +33,7 @@ import kotlin.math.roundToInt
 sealed interface PhotoListOrigin {
     data class Album(val id: String?) : PhotoListOrigin
     data class Favorites(val folderId: Long?) : PhotoListOrigin
+    data object Search : PhotoListOrigin
 }
 
 data class PhotoMotionKey(val origin: PhotoListOrigin, val uri: String)

@@ -3,6 +3,8 @@ plugins {
     id("org.jetbrains.kotlin.android")
     id("org.jetbrains.kotlin.plugin.compose")
 }
+val imageSearchOrigin = providers.gradleProperty("imageSearchOrigin").orElse("").get().trimEnd('/')
+require(imageSearchOrigin.isEmpty() || Regex("https://[A-Za-z0-9.-]+").matches(imageSearchOrigin))
 android {
     namespace = "com.photerest.app"
     compileSdk = 35
@@ -10,14 +12,25 @@ android {
         applicationId = "com.photerest.app.material"
         minSdk = 26
         targetSdk = 35
-        versionCode = 13
-        versionName = "1.4.5"
+        versionCode = 25
+        versionName = "1.8.2"
+        buildConfigField("String", "IMAGE_SEARCH_ORIGIN", "\"$imageSearchOrigin\"")
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
         testInstrumentationRunnerArguments["notAnnotation"] = "com.photerest.app.PermissionScenario"
     }
-    buildFeatures { compose = true }
+    buildFeatures { compose = true; buildConfig = true }
     compileOptions { sourceCompatibility = JavaVersion.VERSION_17; targetCompatibility = JavaVersion.VERSION_17 }
-    kotlinOptions { jvmTarget = "17" }
+    kotlinOptions {
+        jvmTarget = "17"
+        // Gallery's litertlm-android 0.18.1 ships Kotlin 2.4 metadata; Gallery itself skips the check.
+        freeCompilerArgs += "-Xskip-metadata-version-check"
+    }
+    packaging {
+        jniLibs {
+            pickFirsts.add("**/liblitertlm_jni.so")
+            useLegacyPackaging = true
+        }
+    }
     testOptions { animationsDisabled = true }
 }
 dependencies {
@@ -35,6 +48,10 @@ dependencies {
     implementation("androidx.media3:media3-exoplayer:1.7.1")
     implementation("androidx.media3:media3-ui:1.7.1")
     implementation("androidx.work:work-runtime-ktx:2.10.5")
+    // Local semantic search (Google AI Edge Gallery's EmbeddingGemma-2 GPU/CPU stack).
+    implementation(files("libs/photerest-ai-client-0.1.0.aar"))
+    implementation("org.jetbrains.kotlinx:kotlinx-coroutines-android:1.9.0")
+
     testImplementation("junit:junit:4.13.2")
     androidTestImplementation(bom)
     androidTestImplementation("androidx.compose.ui:ui-test-junit4")

@@ -24,6 +24,9 @@ data class AppSettings(
     val dynamicColor: Boolean = false,
     val noTextMode: Boolean = true,
     val autoplayVideos: Boolean = true,
+    val showOnlineSearch: Boolean = true,
+    val onlineSearchGlass: Boolean = true,
+    val onlineSearchBlurDp: Int = 14,
     val showVideos: Boolean = true
 )
 class SettingsStore(context: Context) {
@@ -36,9 +39,16 @@ class SettingsStore(context: Context) {
         dynamicColor = prefs.getBoolean("dynamic_color", false),
         noTextMode = prefs.getBoolean("no_text_mode", true),
         autoplayVideos = prefs.getBoolean("autoplay_videos", true),
+        showOnlineSearch = prefs.getBoolean("online_search_visible", true),
+        onlineSearchGlass = prefs.getBoolean("online_search_glass", true),
+        onlineSearchBlurDp = prefs.getInt("online_search_blur_dp", 14).coerceIn(0, 30),
         showVideos = prefs.getBoolean("show_videos", true)
     ))
     val state = mutable.asStateFlow()
+    fun setOnlineSearchVisible(value: Boolean) { prefs.edit().putBoolean("online_search_visible", value).apply(); mutable.value = mutable.value.copy(showOnlineSearch = value) }
+    fun setOnlineSearchGlass(value: Boolean) { prefs.edit().putBoolean("online_search_glass", value).apply(); mutable.value = mutable.value.copy(onlineSearchGlass = value) }
+    fun previewOnlineSearchBlur(value: Int) { mutable.value = mutable.value.copy(onlineSearchBlurDp = value.coerceIn(0, 30)) }
+    fun saveOnlineSearchBlur() { prefs.edit().putInt("online_search_blur_dp", mutable.value.onlineSearchBlurDp).apply() }
     fun setHaptics(value: Boolean) { prefs.edit().putBoolean("haptics", value).apply(); mutable.value = mutable.value.copy(haptics = value) }
     fun setDark(value: Boolean) { prefs.edit().putBoolean("dark", value).apply(); mutable.value = mutable.value.copy(dark = value) }
     fun setOperationStyle(value: OperationStyle) {

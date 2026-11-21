@@ -100,6 +100,119 @@ class VideoDeviceTest {
         sources.forEach { runCatching { context.contentResolver.delete(it, null, null) } }
     }
 
+    @Test fun distinctVideosNeverShareTransitionOrLetterboxFrames() {
+        assumeTrue(Build.VERSION.SDK_INT >= 29)
+        prepare()
+        val directory = "VideoIdentity-${System.nanoTime() % 100000}"
+        insert(true, "Identity-red.mp4", "video-identity-red.mp4", directory)
+        insert(true, "Identity-blue.mp4", "video-identity-blue.mp4", directory)
+        val (albums, photos) = Gallery.scan(context, includeVideos = true)
+        val album = albums.single { it.name == directory }
+        val blue = photos.single { it.albumId == album.id && it.name == "Identity-blue.mp4" }
+        seed(album)
+        launch()
+        openAlbum(directory, album.id)
+        val redCard = hasContentDescription("播放视频：Identity-red.mp4")
+        val blueCard = hasContentDescription("播放视频：Identity-blue.mp4")
+        fun redPreview() = await(redCard and hasAnyDescendant(hasTestTag("video-preview-playing")))
+        fun assertBlueCenter(label: String) {
+            ui.waitForIdle()
+            // Compose's paused test clock advances layout, while TextureView/screenshots still
+            // reach SurfaceFlinger on real display frames.
+            Thread.sleep(120)
+            val bounds = ui.onNodeWithTag("video-detail-surface", useUnmergedTree = true).fetchSemanticsNode().boundsInRoot
+            val bitmap = instrumentation.uiAutomation.takeScreenshot()
+            try {
+                var bluePixels = 0
+                var total = 0
+                val cx = bounds.center.x.toInt(); val cy = bounds.center.y.toInt()
+                for (y in cy - 20..cy + 20 step 4) for (x in cx - 20..cx + 20 step 4) {
+                    val c = bitmap.getPixel(x, y)
+                    if (android.graphics.Color.blue(c) > android.graphics.Color.red(c) + 70) bluePixels++
+                    total++
+                }
+                // During a paused-clock flight, sample its rendered color without assuming
+                // the coroutine has already reached a particular interpolated position.
+                // The source card is hidden by PhotoMotion while its flight is present.
+                if (label.startsWith("Entry")) {
+                    bluePixels = 0; total = 0
+                    for (y in bounds.top.toInt() until bounds.bottom.toInt() step 12) {
+                        for (x in bounds.left.toInt() until bounds.right.toInt() step 12) {
+                            val c = bitmap.getPixel(x, y)
+                            if (android.graphics.Color.blue(c) > android.graphics.Color.red(c) + 70) bluePixels++
+                            total++
+                        }
+                    }
+                }
+                val evidence = File(context.getExternalFilesDir(null), "evidence").apply { mkdirs() }
+                File(evidence, "identity-${label.replace(' ', '-')}.png").outputStream().use { bitmap.compress(Bitmap.CompressFormat.PNG, 100, it) }
+                println("IdentityCheck $label bounds=$bounds center=${Integer.toHexString(bitmap.getPixel(cx, cy))} blue=$bluePixels/$total")
+                assertTrue("$label must show the clicked blue video, not the red preview ($bluePixels/$total)",
+                    if (label.startsWith("Entry")) bluePixels > 100 else bluePixels > total * .8)
+            } finally { bitmap.recycle() }
+        }
+        repeat(3) { iteration ->
+            redPreview()
+            await(hasTestTag("bitmap-${blue.uri}"))
+            val target = ui.onNode(blueCard).fetchSemanticsNode().config[SemanticsActions.OnClick].action!!
+            val staleTap = ui.onNode(redCard).fetchSemanticsNode().config[SemanticsActions.OnClick].action!!
+            ui.mainClock.autoAdvance = false
+            try {
+                ui.runOnIdle { target(); if (iteration == 1) staleTap() }
+                val flight = ui.onAllNodesWithTag("photo-flight")
+                ui.waitUntil(5_000) { ui.mainClock.advanceTimeByFrame(); flight.fetchSemanticsNodes().isNotEmpty() }
+                ui.mainClock.advanceTimeBy(280)
+                assertBlueCenter("Entry flight $iteration")
+            } finally { ui.mainClock.autoAdvance = true }
+            await(hasText("Identity-blue.mp4"))
+            await(hasText("暂停"))
+            ui.waitUntil(10_000) { ui.onAllNodesWithTag("video-detail-cover", useUnmergedTree = true).fetchSemanticsNodes().isEmpty() }
+            Thread.sleep(250)
+            assertBlueCenter("Live player $iteration")
+            val bounds = ui.onNodeWithTag("video-detail-surface", useUnmergedTree = true).fetchSemanticsNode().boundsInRoot
+            val bitmap = instrumentation.uiAutomation.takeScreenshot()
+            try {
+                for (y in listOf(bounds.top.toInt() + 20, bounds.bottom.toInt() - 20)) {
+                    val c = bitmap.getPixel(bounds.center.x.toInt(), y)
+                    assertTrue("Letterbox must be neutral, not another video", kotlin.math.abs(android.graphics.Color.red(c) - android.graphics.Color.blue(c)) < 30)
+                }
+            } finally { bitmap.recycle() }
+            saveRawScreenshot("video-identity-$iteration")
+            ui.onNodeWithContentDescription("返回视频流").performClick()
+            ui.waitUntil(10_000) { ui.onAllNodesWithTag("video-detail").fetchSemanticsNodes().isEmpty() }
+        }
+    }
+
+    @Test fun activeVideoKeepsPositionAndEarlyReturnDoesNotCaptureAnotherVideo() {
+        assumeTrue(Build.VERSION.SDK_INT >= 29)
+        prepare()
+        val directory = "VideoCurrent-${System.nanoTime() % 100000}"
+        insert(true, "Identity-current.mp4", "video-identity-red.mp4", directory)
+        val (albums, _) = Gallery.scan(context, includeVideos = true)
+        val album = albums.single { it.name == directory }
+        seed(album)
+        launch()
+        openAlbum(directory, album.id)
+        await(hasTestTag("video-preview-playing"))
+        Thread.sleep(700)
+        ui.onNodeWithContentDescription("播放视频：Identity-current.mp4").performClick()
+        await(hasText("暂停"))
+        ui.waitUntil(10_000) { ui.onAllNodesWithTag("video-detail-cover", useUnmergedTree = true).fetchSemanticsNodes().isEmpty() }
+        val progress = ui.onNodeWithTag("video-seek").fetchSemanticsNode().config[SemanticsProperties.ProgressBarRangeInfo].current
+        assertTrue("Opening the active preview must keep its position", progress > 0f)
+        ui.onNodeWithContentDescription("返回视频流").performClick()
+        await(hasTestTag("video-preview-playing"))
+        ui.mainClock.autoAdvance = false
+        try {
+            ui.onNodeWithContentDescription("播放视频：Identity-current.mp4").performSemanticsAction(SemanticsActions.OnClick) { it() }
+            ui.waitUntil(5_000) { ui.mainClock.advanceTimeByFrame(); ui.onAllNodesWithTag("video-detail").fetchSemanticsNodes().isNotEmpty() }
+            ui.onNodeWithContentDescription("返回视频流").performSemanticsAction(SemanticsActions.OnClick) { it() }
+            ui.mainClock.advanceTimeBy(500)
+        } finally { ui.mainClock.autoAdvance = true }
+        ui.waitUntil(10_000) { ui.onAllNodesWithTag("video-detail").fetchSemanticsNodes().isEmpty() }
+        await(hasTestTag("video-preview-playing"))
+    }
+
     @Test fun mixedAlbumMutedPreviewAndDetailControls() {
         assumeTrue(Build.VERSION.SDK_INT >= 29)
         prepare()

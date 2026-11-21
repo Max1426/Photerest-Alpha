@@ -306,10 +306,15 @@ fun ProfileScreen(
 internal fun DetailScreen(
     detail: PhotoDetail, motion: PhotoMotion, available: Boolean, favorite: Boolean, back: () -> Unit,
     collect: () -> Unit, share: () -> Unit, info: () -> Unit,
-    openOriginal: () -> Unit, missing: String, authorize: () -> Unit
+    openOriginal: () -> Unit, missing: String, authorize: () -> Unit, onlineSearch: (() -> Unit)? = null
 ) {
     val photo = detail.photo
     val navigating = motion.busy
+    val onlineSettings = LocalAppAppearance.current ?: AppSettings()
+    val backdrop = rememberOnlineBackdrop(onlineSearch != null && onlineSettings.onlineSearchGlass && !navigating)
+    LaunchedEffect(backdrop, detail) {
+        if (backdrop != null) snapshotFlow { Triple(detail.scale, detail.pan, detail.bitmap) }.collect { backdrop.invalidate() }
+    }
     val toolbar = Modifier.graphicsLayer { alpha = motion.chromeAlpha }
     val feedback = LocalTapFeedback.current
     Scaffold(
@@ -345,7 +350,7 @@ internal fun DetailScreen(
             if (available && widthPx >= 1f && heightPx >= 1f) {
                 val fitWidth = minOf(widthPx, heightPx * photo.aspect)
                 val fitHeight = minOf(heightPx, widthPx / photo.aspect)
-                Box(Modifier.fillMaxSize().pointerInput(photo.uri, fitWidth, fitHeight, navigating) {
+                OnlinePhotoBackdrop(backdrop, Modifier.fillMaxSize().pointerInput(photo.uri, fitWidth, fitHeight, navigating) {
                     detectTransformGestures { _, pan, zoom, _ ->
                         if (navigating) return@detectTransformGestures
                         detail.scale = (detail.scale * zoom).coerceIn(1f, 5f)
@@ -383,6 +388,17 @@ internal fun DetailScreen(
                             translationY = (imageTop - top + (imageHeight - visibleHeight) / 2) * size.height / visibleHeight
                         }
                     )
+                }
+                if (onlineSearch != null && !navigating) {
+                    val buttonPx = with(density) { 56.dp.toPx() }
+                    val insetPx = with(density) { 12.dp.toPx() }
+                    val right = minOf(widthPx, (widthPx + fitWidth * detail.scale) / 2f + detail.pan.x)
+                    val bottom = minOf(heightPx, (heightPx + fitHeight * detail.scale) / 2f + detail.pan.y)
+                    OnlineSearchFab(onlineSettings, backdrop,
+                        Modifier.absoluteOffset {
+                            IntOffset((right - buttonPx - insetPx).coerceIn(0f, (widthPx - buttonPx).coerceAtLeast(0f)).roundToInt(),
+                                (bottom - buttonPx - insetPx).coerceIn(0f, (heightPx - buttonPx).coerceAtLeast(0f)).roundToInt())
+                        }.graphicsLayer { alpha = motion.chromeAlpha }, onlineSearch)
                 }
             } else if (!available) {
                 Box(Modifier.fillMaxSize().verticalScroll(rememberScrollState()), contentAlignment = Alignment.Center) {

@@ -5,3 +5,13 @@ local.properties
 .idea/
 captures/
 *.log
+
+# Local evidence, attachments and secrets are not part of public source.
+artifacts/
+.codex-attachments/
+search-probe/
+design/
+.wrangler/
+.env*
+*.jks
+*.keystore

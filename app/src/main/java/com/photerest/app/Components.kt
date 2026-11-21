@@ -45,7 +45,8 @@ enum class Glyph(val resource: Int) {
     EDIT(R.drawable.ic_material_edit),
     INFO(R.drawable.ic_material_info),
     SETTINGS(R.drawable.ic_material_settings),
-    IMAGE_UP(R.drawable.ic_material_open_in_new)
+    IMAGE_UP(R.drawable.ic_material_open_in_new),
+    SEARCH(R.drawable.ic_material_search)
 }
 
 @Composable

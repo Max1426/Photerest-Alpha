@@ -48,7 +48,7 @@ import kotlinx.coroutines.flow.MutableStateFlow
 import androidx.lifecycle.lifecycleScope
 
 data class DailyOpenRequest(val sequence: Long, val photo: Photo)
-private enum class SettingsRoute { MAIN, DAILY }
+private enum class SettingsRoute { MAIN, DAILY, ONLINE }
 
 class MainActivity : ComponentActivity() {
     private val dailyOpen = MutableStateFlow<DailyOpenRequest?>(null)
@@ -126,6 +126,9 @@ fun PhoterestApp(model: PhotoModel, dailyOpen: DailyOpenRequest? = null) {
     val context = LocalContext.current
     val scope = rememberCoroutineScope()
     var profilePage by rememberSaveable { mutableStateOf(false) }
+    var searchPage by rememberSaveable { mutableStateOf(false) }
+    val activity = context as ComponentActivity
+    val localSearch = remember(activity) { ViewModelProvider(activity)[LocalSearchViewModel::class.java] }
     val motion = remember(scope) { PhotoMotion(scope) }
     val detail = motion.detail
     val video = remember(context) { VideoPlayback(context.applicationContext) }
@@ -138,6 +141,7 @@ fun PhoterestApp(model: PhotoModel, dailyOpen: DailyOpenRequest? = null) {
     var showImport by remember { mutableStateOf(false) }
     var editProfile by remember { mutableStateOf(false) }
     var info by remember { mutableStateOf<Photo?>(null) }
+    var onlinePhoto by remember { mutableStateOf<Photo?>(null) }
     var infoRevision by remember { mutableIntStateOf(0) }
     val viewport = model.viewport(state.selectedAlbum)
     val homeScroll = viewport.grid
@@ -165,8 +169,9 @@ fun PhoterestApp(model: PhotoModel, dailyOpen: DailyOpenRequest? = null) {
     LaunchedEffect(dailyOpen, state.ready, state.busy) {
         if (dailyOpen != null && state.ready && !state.busy && handledDaily != dailyOpen.sequence) {
             handledDaily = dailyOpen.sequence
-            settingsRoute = null; actions = null; info = null; favorite = null; showImport = false
+            settingsRoute = null; actions = null; info = null; favorite = null; showImport = false; onlinePhoto = null
             editProfile = false; pendingFavorite = null
+            searchPage = false
             video.close()
             video.stopPreview()
             motion.open(dailyOpen.photo, null, fromNotification = true)
@@ -212,16 +217,17 @@ fun PhoterestApp(model: PhotoModel, dailyOpen: DailyOpenRequest? = null) {
     fun sourceAvailable(scene: PhotoDetail): Boolean {
         if (!state.available(scene.photo)) return false
         return when (val origin = scene.source?.origin) {
-            is PhotoListOrigin.Album -> !profilePage && state.selectedAlbum == origin.id && state.feed.any { it.uri == scene.photo.uri }
+            is PhotoListOrigin.Album -> !searchPage && !profilePage && state.selectedAlbum == origin.id && state.feed.any { it.uri == scene.photo.uri }
             is PhotoListOrigin.Favorites -> profilePage && state.isFavorite(scene.photo) &&
                 (origin.folderId == null || state.memberships.any { it.uri == scene.photo.uri && it.folderId == origin.folderId })
+            PhotoListOrigin.Search -> searchPage && state.available(scene.photo)
             null -> false
         }
     }
     val sourceCheck by rememberUpdatedState(::sourceAvailable)
-    val modalOpen = settingsRoute != null || showImport || actions != null || editProfile || favorite != null || info != null
+    val modalOpen = settingsRoute != null || showImport || actions != null || editProfile || favorite != null || info != null || onlinePhoto != null
     val modalVisible by rememberUpdatedState(modalOpen)
-    val canPreview = foreground && !modalOpen && appearance.autoplayVideos && appearance.showVideos && detail == null && video.detail == null &&
+    val canPreview = foreground && !searchPage && !modalOpen && appearance.autoplayVideos && appearance.showVideos && detail == null && video.detail == null &&
         !state.switching && !state.refreshing && state.videoAccess != Access.NONE
     val detailAvailable = detail?.photo?.let { state.available(it) } == true
     LaunchedEffect(foreground, modalOpen) { video.setForeground(foreground && !modalOpen) }
@@ -248,12 +254,13 @@ fun PhoterestApp(model: PhotoModel, dailyOpen: DailyOpenRequest? = null) {
         if (detail == null && video.detail != null) video.close()
     }
     AppWindowBars(browser = detail == null || motion.busy)
+    BackHandler(enabled = detail == null && searchPage && !modalOpen) { searchPage = false }
     BackHandler(enabled = detail == null && profilePage && !modalOpen) { profilePage = false }
     PredictiveBackHandler(enabled = detail != null && !modalOpen) { events ->
         val scene = motion.detail ?: return@PredictiveBackHandler
         if (modalVisible) return@PredictiveBackHandler
         // Video: start the shrink from the frame currently on screen, not the stale cover thumbnail.
-        if (scene.photo.isVideo) video.captureFrame()?.let { scene.bitmap = it }
+        if (scene.photo.isVideo) video.captureFrame(scene.photo, scene.source)?.let { scene.bitmap = it }
         try {
             events.collect { motion.seekBack(scene, it.progress, sourceCheck(scene)) }
             motion.close(scene, sourceCheck(scene))
@@ -263,11 +270,14 @@ fun PhoterestApp(model: PhotoModel, dailyOpen: DailyOpenRequest? = null) {
         }
     }
     fun openPhoto(photo: Photo, source: PhotoMotionKey) {
+        // Reject another tap before touching the shared player; PhotoMotion otherwise rejects only
+        // its own second open, leaving the player and the visible scene on different videos.
+        if (motion.detail != null) return
         val available = state.available(photo)
         if (photo.isVideo) {
             // Fly with the exact frame visible on the card; playback stays on that frame until
             // the expand animation has settled.
-            val frame = video.captureFrame()
+            val frame = video.captureFrame(photo, source)
             video.open(photo, source, available, startPaused = true)
             motion.open(photo, source.takeIf { available }, thumbnail = frame)
         } else {
@@ -283,6 +293,7 @@ fun PhoterestApp(model: PhotoModel, dailyOpen: DailyOpenRequest? = null) {
                     .semantics { if (detail != null) hideFromAccessibility() }) {
                     // Shared between Home/Profile so the press bounce continues across the page swap.
                     val homeBounce = remember { NavigationBounceState() }
+                    val searchBounce = remember { NavigationBounceState() }
                     val profileBounce = remember { NavigationBounceState() }
                     val bottomBar: @Composable () -> Unit = {
                         NavigationBar(
@@ -292,19 +303,33 @@ fun PhoterestApp(model: PhotoModel, dailyOpen: DailyOpenRequest? = null) {
                                 .only(WindowInsetsSides.Bottom)
                         ) {
                             BouncyNavigationItem(
-                                selected = !profilePage,
+                                selected = !profilePage && !searchPage,
                                 onClick = {
                                     feedback.perform()
-                                    if (profilePage) profilePage = false else refreshHome()
+                                    if (profilePage || searchPage) {
+                                        profilePage = false
+                                        searchPage = false
+                                    } else refreshHome()
                                 },
                                 bounce = homeBounce,
                                 description = "主页，刷新照片",
                                 label = "主页",
                                 icon = { Symbol(Glyph.HOME) }
                             )
+                            if (LocalSearchModel.supported()) {
+                                BouncyNavigationItem(
+                                    selected = searchPage,
+                                    onClick = { feedback.perform(); profilePage = false; searchPage = true },
+                                    bounce = searchBounce,
+                                    description = "搜索，Beta 实验功能",
+                                    label = "搜索",
+                                    badge = "BETA",
+                                    icon = { Symbol(Glyph.SEARCH) }
+                                )
+                            }
                             BouncyNavigationItem(
                                 selected = profilePage,
-                                onClick = { feedback.perform(); profilePage = true },
+                                onClick = { feedback.perform(); searchPage = false; profilePage = true },
                                 bounce = profileBounce,
                                 description = "个人账号",
                                 label = "个人",
@@ -315,12 +340,18 @@ fun PhoterestApp(model: PhotoModel, dailyOpen: DailyOpenRequest? = null) {
                             )
                         }
                     }
-                    if (!profilePage) key(state.selectedAlbum) {
-                        HomeScreen(state, viewport, { showImport = true }, { authorize() }, { openSettings() },
-                            model::selectAlbum, { refreshHome() }, ::openPhoto, { actions = it }, bottomBar)
-                    } else saveableState.SaveableStateProvider("profile") {
-                        ProfileScreen(state, { editProfile = true }, { settingsRoute = SettingsRoute.MAIN },
-                            ::openPhoto, { actions = it }, model, bottomBar)
+                    when {
+                        searchPage -> saveableState.SaveableStateProvider("search") {
+                            PhotoSearchScreen(state, localSearch, ::openPhoto, bottomBar)
+                        }
+                        !profilePage -> key(state.selectedAlbum) {
+                            HomeScreen(state, viewport, { showImport = true }, { authorize() }, { openSettings() },
+                                model::selectAlbum, { refreshHome() }, ::openPhoto, { actions = it }, bottomBar)
+                        }
+                        else -> saveableState.SaveableStateProvider("profile") {
+                            ProfileScreen(state, { editProfile = true }, { settingsRoute = SettingsRoute.MAIN },
+                                ::openPhoto, { actions = it }, model, bottomBar)
+                        }
                     }
                 }
             }
@@ -342,7 +373,7 @@ fun PhoterestApp(model: PhotoModel, dailyOpen: DailyOpenRequest? = null) {
                     if (photo.isVideo) {
                         VideoDetailScreen(detail, video, motion, available, state.videoAccess, state.isFavorite(photo),
                             {
-                                detail.bitmap = video.captureFrame() ?: detail.bitmap
+                                detail.bitmap = video.captureFrame(photo, detail.source) ?: detail.bitmap
                                 motion.close(detail, sourceAvailable(detail))
                             },
                             { if (!motion.busy) share(photo) }, { if (!motion.busy) collect(photo) },
@@ -354,16 +385,19 @@ fun PhoterestApp(model: PhotoModel, dailyOpen: DailyOpenRequest? = null) {
                             { if (!motion.busy) collect(photo) }, { if (!motion.busy) share(photo) },
                             { if (!motion.busy) info = photo }, { if (!motion.busy) openOriginal(photo) },
                             if (state.access == Access.FULL) "原图已删除或不可读取" else "照片访问受限，请重新授权",
-                            { authorize() })
+                            { authorize() },
+                            onlineSearch = if (appearance.showOnlineSearch && available) ({ if (!motion.busy) onlinePhoto = photo }) else null)
                     }
                 }
                 motion.flight?.let { PhotoFlightOverlay(it, { motion.progress }, { rootOrigin }) }
             }
         }
 
+        onlinePhoto?.let { photo -> key(photo.uri) { OnlineSearchSheet(photo) { onlinePhoto = null } } }
         when (settingsRoute) {
             SettingsRoute.MAIN -> SettingsScreen(model.settings, { settingsRoute = null }, { settingsRoute = SettingsRoute.DAILY },
-                videoAccess = state.videoAccess, authorizeVideos = ::authorizeVideos)
+                videoAccess = state.videoAccess, authorizeVideos = ::authorizeVideos, onlineSearch = { settingsRoute = SettingsRoute.ONLINE })
+            SettingsRoute.ONLINE -> OnlineSearchSettings(model.settings) { settingsRoute = SettingsRoute.MAIN }
             SettingsRoute.DAILY -> {
                 DailySettingsScreen(model, { settingsRoute = SettingsRoute.MAIN }, { authorize() })
             }

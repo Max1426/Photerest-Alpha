@@ -16,7 +16,7 @@ import androidx.compose.ui.semantics.Role
 import androidx.compose.ui.unit.dp
 
 @Composable
-internal fun SettingsScreen(store: SettingsStore, dismiss: () -> Unit, daily: () -> Unit, videoAccess: Access = Access.NONE, authorizeVideos: () -> Unit = {}) {
+internal fun SettingsScreen(store: SettingsStore, dismiss: () -> Unit, daily: () -> Unit, videoAccess: Access = Access.NONE, authorizeVideos: () -> Unit = {}, onlineSearch: () -> Unit = {}) {
     val settings by store.state.collectAsState()
     val feedback = LocalTapFeedback.current
     val scroll = rememberScrollState()
@@ -66,6 +66,8 @@ internal fun SettingsScreen(store: SettingsStore, dismiss: () -> Unit, daily: ()
                 )
             }
             OperationGroup("偏好") {
+                OperationItem("联网搜图", Modifier.tapClickable(onClick = onlineSearch),
+                    summary = "Google 搜图、共享额度与按钮毛玻璃", trailing = { Text("›") })
                 OperationItem(
                     "震动反馈", Modifier.testTag("haptics-switch").toggleable(settings.haptics, role = Role.Switch) {
                         store.setHaptics(it)

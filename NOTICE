@@ -6,3 +6,8 @@ See app/src/main/assets/licenses for bundled icon notices.
 
 AndroidX Media3 (media3-exoplayer, media3-ui) by The Android Open Source
 Project, Apache License 2.0. See app/src/main/assets/licenses for the notice.
+
+Google search mark: original Google artwork; Google LLC retains its trademark rights.
+Photerest AI client: Apache-2.0, source archive included in app/libs.
+Google AI Edge Gallery-derived preprocessing: Apache-2.0, see https://github.com/google-ai-edge/gallery.
+The AI Hub source and runtime dependencies, and the optional model, have separate notices in the companion source archive. No model weights are bundled in Alpha.

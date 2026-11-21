@@ -20,6 +20,7 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.geometry.Rect
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.graphicsLayer
+import androidx.compose.ui.graphics.toArgb
 import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.layout.LayoutCoordinates
 import androidx.compose.ui.layout.ContentScale
@@ -35,6 +36,8 @@ import androidx.media3.common.C
 import androidx.media3.common.MediaItem
 import androidx.media3.common.PlaybackException
 import androidx.media3.common.Player
+import androidx.media3.common.Timeline
+import androidx.media3.exoplayer.analytics.AnalyticsListener
 import androidx.media3.exoplayer.ExoPlayer
 import androidx.media3.ui.AspectRatioFrameLayout
 import androidx.media3.ui.PlayerView
@@ -54,6 +57,12 @@ internal class VideoPlayback(private val context: Context) {
     private val cards = mutableMapOf<PhotoMotionKey, Card>()
     private var engine: ExoPlayer? = null
     private var surface: PlayerView? = null
+    private data class SurfaceOwner(val uri: String, val revision: Long, val key: PhotoMotionKey?, val preview: Boolean)
+    private var surfaceOwner: SurfaceOwner? = null
+    private var frameListener: AnalyticsListener? = null
+    private var bindingGeneration = 0L
+    private var mediaGeneration = 0L
+    private var mediaId = ""
     private var source: PhotoMotionKey? = null
     private var resume: Pair<PhotoMotionKey, Long>? = null
     private var current: Photo? = null
@@ -83,12 +92,32 @@ internal class VideoPlayback(private val context: Context) {
     private fun player(): ExoPlayer = engine ?: ExoPlayer.Builder(context).build().also { player ->
         engine = player
         player.addListener(object : Player.Listener {
-            override fun onRenderedFirstFrame() { firstFrame = true }
             override fun onIsPlayingChanged(isPlaying: Boolean) { playing = isPlaying }
             override fun onPlaybackStateChanged(playbackState: Int) { ended = playbackState == Player.STATE_ENDED }
-            override fun onPlayerError(error: PlaybackException) { failed = true }
+
+        })
+        player.addAnalyticsListener(object : AnalyticsListener {
+            override fun onPlayerError(eventTime: AnalyticsListener.EventTime, error: PlaybackException) {
+                if (eventMatches(eventTime)) failed = true
+            }
         })
     }
+
+    private fun eventMatches(event: AnalyticsListener.EventTime): Boolean {
+        if (mediaId.isEmpty() || event.windowIndex !in 0 until event.timeline.windowCount) return false
+        return event.timeline.getWindow(event.windowIndex, Timeline.Window()).mediaItem.mediaId == mediaId
+    }
+
+    private fun samePhoto(left: Photo?, right: Photo) = left?.uri == right.uri && left.added == right.added
+
+    private fun owns(photo: Photo, key: PhotoMotionKey?, previewMode: Boolean): Boolean =
+        samePhoto(current, photo) && if (previewMode) detail == null && preview == key && key != null
+        else samePhoto(detail, photo) && source == key
+
+    fun hasFrame(photo: Photo, key: PhotoMotionKey?, previewMode: Boolean): Boolean =
+        firstFrame && !failed && owns(photo, key, previewMode) &&
+            surfaceOwner == SurfaceOwner(photo.uri, photo.added, key, previewMode) &&
+            surface?.player === engine && engine?.currentMediaItem?.mediaId == mediaId
 
     private fun audio(player: ExoPlayer, enabled: Boolean, focus: Boolean) {
         player.volume = if (enabled) 1f else 0f
@@ -103,7 +132,10 @@ internal class VideoPlayback(private val context: Context) {
             current = photo
             firstFrame = false
             failed = false
-            player.setMediaItem(MediaItem.fromUri(Uri.parse(photo.uri)), position)
+            ended = false
+            surface?.let { it.animate().cancel(); it.alpha = 0f }
+            mediaId = "${photo.uri}:${photo.added}:${++mediaGeneration}"
+            player.setMediaItem(MediaItem.Builder().setUri(Uri.parse(photo.uri)).setMediaId(mediaId).build(), position)
             player.prepare()
         }
         return player
@@ -130,6 +162,7 @@ internal class VideoPlayback(private val context: Context) {
             val matches = when (val origin = key.origin) {
                 is PhotoListOrigin.Album -> !profilePage && origin.id == album
                 is PhotoListOrigin.Favorites -> profilePage
+                PhotoListOrigin.Search -> false
             }
             if (!matches) return@mapNotNull null
             val bounds = card.coordinates.boundsInRoot()
@@ -162,7 +195,7 @@ internal class VideoPlayback(private val context: Context) {
     }
 
     fun open(photo: Photo, key: PhotoMotionKey, available: Boolean, startPaused: Boolean = false) {
-        val fromPreview = preview == key && current?.added == photo.added && !failed
+        val fromPreview = preview == key && samePhoto(current, photo) && !failed
         val start = when {
             fromPreview -> position
             resume?.first == key -> resume?.second ?: 0L
@@ -170,6 +203,7 @@ internal class VideoPlayback(private val context: Context) {
         }
         if (available && fromPreview) preview = null else stopPreview()
         resume = null
+        detailReady = false
         detail = photo
         source = key
         muted = false
@@ -190,7 +224,8 @@ internal class VideoPlayback(private val context: Context) {
      * Bitmap of the frame currently shown by the bound TextureView. Used to start the shared-element
      * transition from the exact frame the user was looking at, instead of a stale cover thumbnail.
      */
-    fun captureFrame(): Bitmap? {
+    fun captureFrame(photo: Photo, key: PhotoMotionKey?): Bitmap? {
+        if (!hasFrame(photo, key, previewMode = detail == null)) return null
         val view = surface?.videoSurfaceView as? android.view.TextureView ?: return null
         if (!view.isAvailable || view.width <= 0 || view.height <= 0) return null
         return runCatching { view.bitmap }.getOrNull()?.takeIf { it.width > 0 && it.height > 0 }
@@ -251,22 +286,46 @@ internal class VideoPlayback(private val context: Context) {
 
     fun seek(position: Long) { engine?.seekTo(position.coerceIn(0L, duration)) }
 
-    fun bind(view: PlayerView) {
-        if (surface === view) return
+    fun bind(view: PlayerView, photo: Photo, key: PhotoMotionKey?, previewMode: Boolean): Boolean {
+        if (!owns(photo, key, previewMode)) return false
+        val owner = SurfaceOwner(photo.uri, photo.added, key, previewMode)
+        if (surface === view && surfaceOwner == owner) return true
+        surface?.let(::unbind)
+        val generation = ++bindingGeneration
         firstFrame = false
-        surface?.player = null
         surface = view
-        view.player = player()
+        surfaceOwner = owner
+        view.animate().cancel()
+        view.alpha = 0f
+        val player = player()
+        val listener = object : AnalyticsListener {
+            override fun onRenderedFirstFrame(eventTime: AnalyticsListener.EventTime, output: Any, renderTimeMs: Long) {
+                if (generation == bindingGeneration && surface === view && surfaceOwner == owner &&
+                    owns(photo, key, previewMode) && eventMatches(eventTime)) firstFrame = true
+            }
+        }
+        frameListener = listener
+        player.addAnalyticsListener(listener)
+        view.player = player
+        return true
     }
 
     fun unbind(view: PlayerView) {
         if (surface !== view) return
+        ++bindingGeneration
+        frameListener?.let { engine?.removeAnalyticsListener(it) }
+        frameListener = null
+        view.animate().cancel()
+        view.alpha = 0f
         view.player = null
         surface = null
+        surfaceOwner = null
         firstFrame = false
     }
 
     private fun resetMedia() {
+        surface?.let(::unbind)
+        mediaId = ""
         engine?.let { player ->
             player.pause()
             audio(player, enabled = false, focus = false)
@@ -274,6 +333,7 @@ internal class VideoPlayback(private val context: Context) {
             player.clearMediaItems()
         }
         current = null
+        ended = false
         failed = false
         firstFrame = false
     }
@@ -287,8 +347,9 @@ internal class VideoPlayback(private val context: Context) {
 
 @SuppressLint("InflateParams")
 @Composable
-private fun VideoSurface(playback: VideoPlayback, preview: Boolean) {
-    val frameReady = playback.firstFrame && !playback.failed
+private fun VideoSurface(playback: VideoPlayback, photo: Photo, source: PhotoMotionKey?, preview: Boolean) {
+    val frameReady = playback.hasFrame(photo, source, preview)
+    val background = MaterialTheme.colorScheme.background.toArgb()
     val playbackTag = when {
         preview && frameReady && playback.playing -> "video-preview-playing"
         !preview && playback.muted -> "video-detail-audio-off"
@@ -300,7 +361,10 @@ private fun VideoSurface(playback: VideoPlayback, preview: Boolean) {
             factory = { context ->
                 (LayoutInflater.from(context).inflate(R.layout.local_video_surface, null, false) as PlayerView).apply {
                     resizeMode = if (preview) AspectRatioFrameLayout.RESIZE_MODE_ZOOM else AspectRatioFrameLayout.RESIZE_MODE_FIT
-                    setShutterBackgroundColor(android.graphics.Color.TRANSPARENT)
+                    setKeepContentOnPlayerReset(false)
+                    setShutterBackgroundColor(background)
+                    setBackgroundColor(background)
+                    alpha = 0f
                     isClickable = false
                     isFocusable = false
                     importantForAccessibility = View.IMPORTANT_FOR_ACCESSIBILITY_NO_HIDE_DESCENDANTS
@@ -309,8 +373,10 @@ private fun VideoSurface(playback: VideoPlayback, preview: Boolean) {
             modifier = Modifier.fillMaxSize().testTag(if (preview) "video-preview-active" else "video-detail-surface"),
             onRelease = playback::unbind,
             update = { view ->
-                playback.bind(view)
-                val targetAlpha = if (frameReady) 1f else 0f
+                val bound = playback.bind(view, photo, source, preview)
+                view.setShutterBackgroundColor(background)
+                view.setBackgroundColor(background)
+                val targetAlpha = if (bound && frameReady) 1f else 0f
                 if (view.alpha != targetAlpha) {
                     view.animate().cancel()
                     if (targetAlpha == 1f) view.animate().alpha(1f).setDuration(160).start()
@@ -328,7 +394,7 @@ internal fun VideoPreview(photo: Photo, source: PhotoMotionKey, onBitmap: ((andr
     Box(Modifier.fillMaxSize()) {
         PhotoImage(photo.uri, Modifier.fillMaxSize(), revision = photo.added, video = true, onBitmap = onBitmap)
         if (playback != null && playback.preview == source) {
-            key(source) { VideoSurface(playback, preview = true) }
+            key(source) { VideoSurface(playback, photo, source, preview = true) }
         }
         Text("▶  ${if (photo.durationMs > 0) VideoPreviewRules.videoTime(photo.durationMs) else "视频"}",
             modifier = Modifier.align(Alignment.BottomEnd).padding(8.dp).testTag("video-duration")
@@ -376,11 +442,14 @@ internal fun VideoDetailScreen(
             // Hide the full-screen frame during the expand/shrink flight; the flight layer draws the
             // captured card frame. Once settled, the live surface blends in over the cover.
             val showContent = motion.flight == null && !motion.busy
-            Box(Modifier.fillMaxSize().graphicsLayer { alpha = if (showContent) 1f else 0f }) {
+            Box(Modifier.fillMaxSize().background(MaterialTheme.colorScheme.background)
+                .graphicsLayer { alpha = if (showContent) 1f else 0f }) {
                 if (available) {
-                    PhotoImage(photo.uri, Modifier.fillMaxSize(), revision = photo.added, scale = ContentScale.Fit,
-                        video = true, thumbnail = scene.thumbnail, preferThumbnail = scene.thumbnail != null)
-                    VideoSurface(playback, preview = false)
+                    if (!playback.hasFrame(photo, scene.source, previewMode = false)) {
+                        PhotoImage(photo.uri, Modifier.fillMaxSize().testTag("video-detail-cover"), revision = photo.added, scale = ContentScale.Fit,
+                            video = true, thumbnail = scene.thumbnail, preferThumbnail = scene.thumbnail != null)
+                    }
+                    VideoSurface(playback, photo, scene.source, preview = false)
                     if (playback.failed) Text("无法播放此视频", Modifier.align(Alignment.Center).background(MaterialTheme.colorScheme.surface).padding(12.dp))
                 } else {
                     Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
