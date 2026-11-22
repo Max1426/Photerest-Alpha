@@ -1,1 +1,1 @@
-<paths xmlns:android="http://schemas.android.com/apk/res/android"><cache-path name="shared_images" path="shares/" /></paths>
+<paths xmlns:android="http://schemas.android.com/apk/res/android"><cache-path name="shared_images" path="shares/" /><cache-path name="fi_component" path="fi-install/" /></paths>

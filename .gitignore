@@ -15,3 +15,9 @@ design/
 .env*
 *.jks
 *.keystore
+
+# Offline search owner secrets and per-installation licenses
+**/authority-private.pem
+**/passphrase.dpapi.xml
+**/issued-licenses.jsonl
+**/*search-license*.txt

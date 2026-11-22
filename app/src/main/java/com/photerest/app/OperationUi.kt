@@ -11,6 +11,7 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.testTag
+import androidx.compose.ui.semantics.clearAndSetSemantics
 import androidx.compose.ui.semantics.heading
 import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.text.font.FontWeight
@@ -63,6 +64,8 @@ internal fun OperationScreen(
     canDismiss: Boolean = true,
     actions: @Composable RowScope.() -> Unit = {},
     bottomBar: @Composable () -> Unit = {},
+    overlayVisible: Boolean = false,
+    overlay: @Composable () -> Unit = {},
     content: @Composable () -> Unit
 ) {
     Dialog(
@@ -74,29 +77,33 @@ internal fun OperationScreen(
         )
     ) {
         DialogThemeBars()
-        Scaffold(
-            modifier = Modifier.fillMaxSize().imePadding().testTag("operation-page"),
-            contentWindowInsets = WindowInsets.safeDrawing,
-            topBar = {
-                val expressive = LocalExpressive.current
-                TopAppBar(
-                    title = {
-                        Text(
-                            title,
-                            modifier = Modifier.semantics { heading() },
-                            style = if (expressive) MaterialTheme.typography.headlineSmall else MaterialTheme.typography.titleLarge,
-                            fontWeight = if (expressive) FontWeight.Bold else FontWeight.Normal
-                        )
-                    },
-                    navigationIcon = { GlyphButton(Glyph.BACK, backLabel) { if (canDismiss) back() } },
-                    actions = actions,
-                    colors = TopAppBarDefaults.topAppBarColors(containerColor = MaterialTheme.colorScheme.surface)
-                )
-            },
-            bottomBar = bottomBar,
-            containerColor = MaterialTheme.colorScheme.surface
-        ) { padding ->
-            Box(Modifier.fillMaxSize().padding(padding).consumeWindowInsets(padding)) { content() }
+        Box(Modifier.fillMaxSize()) {
+            Scaffold(
+                modifier = Modifier.fillMaxSize().imePadding().testTag("operation-page")
+                    .then(if (overlayVisible) Modifier.clearAndSetSemantics {} else Modifier),
+                contentWindowInsets = WindowInsets.safeDrawing,
+                topBar = {
+                    val expressive = LocalExpressive.current
+                    TopAppBar(
+                        title = {
+                            Text(
+                                title,
+                                modifier = Modifier.semantics { heading() },
+                                style = if (expressive) MaterialTheme.typography.headlineSmall else MaterialTheme.typography.titleLarge,
+                                fontWeight = if (expressive) FontWeight.Bold else FontWeight.Normal
+                            )
+                        },
+                        navigationIcon = { GlyphButton(Glyph.BACK, backLabel) { if (canDismiss) back() } },
+                        actions = actions,
+                        colors = TopAppBarDefaults.topAppBarColors(containerColor = MaterialTheme.colorScheme.surface)
+                    )
+                },
+                bottomBar = bottomBar,
+                containerColor = MaterialTheme.colorScheme.surface
+            ) { padding ->
+                Box(Modifier.fillMaxSize().padding(padding).consumeWindowInsets(padding)) { content() }
+            }
+            overlay()
         }
     }
 }

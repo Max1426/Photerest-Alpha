@@ -442,8 +442,11 @@ internal fun VideoDetailScreen(
             // Hide the full-screen frame during the expand/shrink flight; the flight layer draws the
             // captured card frame. Once settled, the live surface blends in over the cover.
             val showContent = motion.flight == null && !motion.busy
-            Box(Modifier.fillMaxSize().background(MaterialTheme.colorScheme.background)
-                .graphicsLayer { alpha = if (showContent) 1f else 0f }) {
+            // Keep the opaque playback/letterbox background INSIDE the visibility layer.
+            // A background outside graphicsLayer remains visible while the video shrinks away,
+            // masking the restored grid with a full-viewport rectangle during predictive back.
+            Box(Modifier.fillMaxSize().graphicsLayer { alpha = if (showContent) 1f else 0f }
+                .background(MaterialTheme.colorScheme.background)) {
                 if (available) {
                     if (!playback.hasFrame(photo, scene.source, previewMode = false)) {
                         PhotoImage(photo.uri, Modifier.fillMaxSize().testTag("video-detail-cover"), revision = photo.added, scale = ContentScale.Fit,

@@ -26,6 +26,8 @@ import androidx.compose.ui.graphics.toArgb
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.Modifier
 import androidx.compose.foundation.background
+import androidx.compose.ui.focus.FocusRequester
+import androidx.compose.ui.focus.focusRequester
 import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.input.pointer.pointerInput
@@ -48,7 +50,7 @@ import kotlinx.coroutines.flow.MutableStateFlow
 import androidx.lifecycle.lifecycleScope
 
 data class DailyOpenRequest(val sequence: Long, val photo: Photo)
-private enum class SettingsRoute { MAIN, DAILY, ONLINE }
+private enum class SettingsRoute { MAIN, DAILY, FI, FI_LOCAL, ONLINE }
 
 class MainActivity : ComponentActivity() {
     private val dailyOpen = MutableStateFlow<DailyOpenRequest?>(null)
@@ -75,6 +77,8 @@ class MainActivity : ComponentActivity() {
     }
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
+        SearchAuthorization.initialize(this)
+        FiAccess.initialize(this)
         enableEdgeToEdge(statusBarStyle = SystemBarStyle.dark(android.graphics.Color.BLACK), navigationBarStyle = SystemBarStyle.dark(android.graphics.Color.BLACK))
         val model = ViewModelProvider(this)[PhotoModel::class.java]
         receiveDaily(intent)
@@ -141,11 +145,31 @@ fun PhoterestApp(model: PhotoModel, dailyOpen: DailyOpenRequest? = null) {
     var showImport by remember { mutableStateOf(false) }
     var editProfile by remember { mutableStateOf(false) }
     var info by remember { mutableStateOf<Photo?>(null) }
+    var showSearchUnavailable by remember { mutableStateOf(false) }
+    var showFiDisabled by remember { mutableStateOf(false) }
+    val searchFocus = remember { FocusRequester() }
+    var fiWasOpen by remember { mutableStateOf(false) }
+    var showFiGuide by remember { mutableStateOf(false) }
     var onlinePhoto by remember { mutableStateOf<Photo?>(null) }
     var infoRevision by remember { mutableIntStateOf(0) }
     val viewport = model.viewport(state.selectedAlbum)
     val homeScroll = viewport.grid
     var settingsRoute by rememberSaveable { mutableStateOf<SettingsRoute?>(null) }
+    LaunchedEffect(showFiDisabled) {
+        if (fiWasOpen && !showFiDisabled && settingsRoute == null) {
+            withFrameNanos { }
+            runCatching { searchFocus.requestFocus() }
+        }
+        fiWasOpen = showFiDisabled
+    }
+    LaunchedEffect(appearance.fiEnabled) {
+        if (!appearance.fiEnabled) {
+            localSearch.pause()
+            searchPage = false
+            onlinePhoto = null
+            showFiGuide = false
+        }
+    }
     var handledDaily by remember { mutableStateOf<Long?>(null) }
     var scrollRequest by remember { mutableIntStateOf(0) }
     val permission = rememberLauncherForActivityResult(ActivityResultContracts.RequestMultiplePermissions()) { model.reload() }
@@ -225,7 +249,7 @@ fun PhoterestApp(model: PhotoModel, dailyOpen: DailyOpenRequest? = null) {
         }
     }
     val sourceCheck by rememberUpdatedState(::sourceAvailable)
-    val modalOpen = settingsRoute != null || showImport || actions != null || editProfile || favorite != null || info != null || onlinePhoto != null
+    val modalOpen = showFiDisabled || showFiGuide || settingsRoute != null || showImport || actions != null || editProfile || favorite != null || info != null || onlinePhoto != null
     val modalVisible by rememberUpdatedState(modalOpen)
     val canPreview = foreground && !searchPage && !modalOpen && appearance.autoplayVideos && appearance.showVideos && detail == null && video.detail == null &&
         !state.switching && !state.refreshing && state.videoAccess != Access.NONE
@@ -290,7 +314,7 @@ fun PhoterestApp(model: PhotoModel, dailyOpen: DailyOpenRequest? = null) {
         Box(Modifier.fillMaxSize().onGloballyPositioned { rootOrigin = it.positionInRoot() }) {
             CompositionLocalProvider(LocalPhotoMotion provides motion, LocalVideoPlayback provides video) {
                 Box(Modifier.fillMaxSize().graphicsLayer { alpha = if (motion.progress == 1f && motion.flight == null) 0f else 1f }
-                    .semantics { if (detail != null) hideFromAccessibility() }) {
+                    .semantics { if (detail != null || showFiDisabled) hideFromAccessibility() }) {
                     // Shared between Home/Profile so the press bounce continues across the page swap.
                     val homeBounce = remember { NavigationBounceState() }
                     val searchBounce = remember { NavigationBounceState() }
@@ -319,8 +343,9 @@ fun PhoterestApp(model: PhotoModel, dailyOpen: DailyOpenRequest? = null) {
                             if (LocalSearchModel.supported()) {
                                 BouncyNavigationItem(
                                     selected = searchPage,
-                                    onClick = { feedback.perform(); profilePage = false; searchPage = true },
+                                    onClick = { feedback.perform(); if (appearance.fiEnabled) { profilePage = false; searchPage = true } else showFiDisabled = true },
                                     bounce = searchBounce,
+                                    modifier = Modifier.focusRequester(searchFocus),
                                     description = "搜索，Beta 实验功能",
                                     label = "搜索",
                                     badge = "BETA",
@@ -342,7 +367,7 @@ fun PhoterestApp(model: PhotoModel, dailyOpen: DailyOpenRequest? = null) {
                     }
                     when {
                         searchPage -> saveableState.SaveableStateProvider("search") {
-                            PhotoSearchScreen(state, localSearch, ::openPhoto, bottomBar)
+                            PhotoSearchScreen(state, localSearch, ::openPhoto, bottomBar, settings = { settingsRoute = SettingsRoute.FI_LOCAL })
                         }
                         !profilePage -> key(state.selectedAlbum) {
                             HomeScreen(state, viewport, { showImport = true }, { authorize() }, { openSettings() },
@@ -386,23 +411,35 @@ fun PhoterestApp(model: PhotoModel, dailyOpen: DailyOpenRequest? = null) {
                             { if (!motion.busy) info = photo }, { if (!motion.busy) openOriginal(photo) },
                             if (state.access == Access.FULL) "原图已删除或不可读取" else "照片访问受限，请重新授权",
                             { authorize() },
-                            onlineSearch = if (appearance.showOnlineSearch && available) ({ if (!motion.busy) onlinePhoto = photo }) else null)
+                            onlineSearch = if (appearance.fiEnabled && appearance.showOnlineSearch && available) ({ if (!motion.busy) { if (fiOnlineReason(appearance.fiEnabled,appearance.googleExtensionEnabled,SearchAuthorization.ready) == null) onlinePhoto = photo else showSearchUnavailable = true } }) else null)
                     }
                 }
                 motion.flight?.let { PhotoFlightOverlay(it, { motion.progress }, { rootOrigin }) }
             }
         }
 
+        if (showSearchUnavailable) OnlineTheme {
+            AlertDialog(onDismissRequest = { showSearchUnavailable = false }, title = { Text("Google 联网搜图 · Beta") },
+                text = { Text(fiOnlineReason(appearance.fiEnabled,appearance.googleExtensionEnabled,SearchAuthorization.ready) ?: "联网搜索功能暂时不可用。") },
+                confirmButton = { TapTextButton(onClick = { showSearchUnavailable = false; settingsRoute = SettingsRoute.ONLINE }) { Text("查看扩展设置") } },
+                dismissButton = { TapTextButton(onClick = { showSearchUnavailable = false }) { Text("关闭") } })
+        }
         onlinePhoto?.let { photo -> key(photo.uri) { OnlineSearchSheet(photo) { onlinePhoto = null } } }
         when (settingsRoute) {
             SettingsRoute.MAIN -> SettingsScreen(model.settings, { settingsRoute = null }, { settingsRoute = SettingsRoute.DAILY },
-                videoAccess = state.videoAccess, authorizeVideos = ::authorizeVideos, onlineSearch = { settingsRoute = SettingsRoute.ONLINE })
-            SettingsRoute.ONLINE -> OnlineSearchSettings(model.settings) { settingsRoute = SettingsRoute.MAIN }
+                videoAccess = state.videoAccess, authorizeVideos = ::authorizeVideos, onlineSearch = { settingsRoute = SettingsRoute.FI })
+            SettingsRoute.FI -> FiSettingsScreen(model.settings, { settingsRoute = SettingsRoute.MAIN },
+                local = { showFiGuide = false; settingsRoute = SettingsRoute.FI_LOCAL },
+                google = { showFiGuide = false; settingsRoute = SettingsRoute.ONLINE }, guide = { showFiGuide = true },
+                guideOpen = showFiGuide, dismissGuide = { showFiGuide = false })
+            SettingsRoute.FI_LOCAL -> FiLocalSettingsScreen(model.settings,localSearch) { settingsRoute = SettingsRoute.FI }
+            SettingsRoute.ONLINE -> OnlineSearchSettings(model.settings) { settingsRoute = SettingsRoute.FI }
             SettingsRoute.DAILY -> {
                 DailySettingsScreen(model, { settingsRoute = SettingsRoute.MAIN }, { authorize() })
             }
             null -> Unit
         }
+        if (showFiDisabled) FiDisabledSheet({ showFiDisabled = false }) { showFiDisabled = false; settingsRoute = SettingsRoute.FI }
         if (showImport) ImportSheet(state, { showImport = false }, { authorize() }, { openSettings() }, { ids -> model.importAlbums(ids); showImport = false }, model::unlinkAlbum)
         actions?.let { photo ->
             PhotoActionSheet(photo, state, { actions = null }, {

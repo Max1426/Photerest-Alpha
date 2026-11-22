@@ -27,7 +27,10 @@ data class AppSettings(
     val showOnlineSearch: Boolean = true,
     val onlineSearchGlass: Boolean = true,
     val onlineSearchBlurDp: Int = 14,
-    val showVideos: Boolean = true
+    val showVideos: Boolean = true,
+    val fiEnabled: Boolean = false,
+    val googleExtensionEnabled: Boolean = true,
+    val fiSetupSeen: Boolean = false
 )
 class SettingsStore(context: Context) {
     private val prefs = context.getSharedPreferences("appearance", Context.MODE_PRIVATE)
@@ -42,9 +45,15 @@ class SettingsStore(context: Context) {
         showOnlineSearch = prefs.getBoolean("online_search_visible", true),
         onlineSearchGlass = prefs.getBoolean("online_search_glass", true),
         onlineSearchBlurDp = prefs.getInt("online_search_blur_dp", 14).coerceIn(0, 30),
-        showVideos = prefs.getBoolean("show_videos", true)
+        showVideos = prefs.getBoolean("show_videos", true),
+        fiEnabled = prefs.getBoolean("fi_enabled", false),
+        googleExtensionEnabled = prefs.getBoolean("fi_google_enabled", true),
+        fiSetupSeen = prefs.getBoolean("fi_setup_seen", false)
     ))
     val state = mutable.asStateFlow()
+    fun setFiEnabled(value: Boolean) { prefs.edit().putBoolean("fi_enabled", value).apply(); mutable.value = mutable.value.copy(fiEnabled = value) }
+    fun setGoogleExtensionEnabled(value: Boolean) { prefs.edit().putBoolean("fi_google_enabled", value).apply(); mutable.value = mutable.value.copy(googleExtensionEnabled = value) }
+    fun markFiSetupSeen() { prefs.edit().putBoolean("fi_setup_seen", true).apply(); mutable.value = mutable.value.copy(fiSetupSeen = true) }
     fun setOnlineSearchVisible(value: Boolean) { prefs.edit().putBoolean("online_search_visible", value).apply(); mutable.value = mutable.value.copy(showOnlineSearch = value) }
     fun setOnlineSearchGlass(value: Boolean) { prefs.edit().putBoolean("online_search_glass", value).apply(); mutable.value = mutable.value.copy(onlineSearchGlass = value) }
     fun previewOnlineSearchBlur(value: Int) { mutable.value = mutable.value.copy(onlineSearchBlurDp = value.coerceIn(0, 30)) }

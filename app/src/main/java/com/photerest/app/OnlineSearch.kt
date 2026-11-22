@@ -65,10 +65,13 @@ internal fun OnlineSearchSettings(store: SettingsStore, back: () -> Unit) {
     val feedback = LocalTapFeedback.current
     val scope = rememberCoroutineScope()
     val supported = Build.VERSION.SDK_INT >= 31
+    val authorization by SearchAuthorization.status.collectAsState()
     var quota by remember { mutableStateOf<SearchQuota?>(null) }
     var quotaBusy by remember { mutableStateOf(false) }
     var quotaFailure by remember { mutableStateOf<String?>(null) }
     suspend fun loadQuota() {
+        val unavailable = fiOnlineReason(settings.fiEnabled,settings.googleExtensionEnabled,SearchAuthorization.ready)
+        if (unavailable != null) { quota = null; quotaFailure = unavailable; return }
         if (quotaBusy) return
         quotaBusy = true
         quotaFailure = null
@@ -76,14 +79,29 @@ internal fun OnlineSearchSettings(store: SettingsStore, back: () -> Unit) {
         catch (error: Exception) { if (error is CancellationException) throw error; quotaFailure = searchMessage(error) }
         finally { quotaBusy = false }
     }
-    LaunchedEffect(Unit) { loadQuota() }
+    LaunchedEffect(authorization,settings.fiEnabled,settings.googleExtensionEnabled) { loadQuota() }
     OnlineTheme {
-        OperationScreen("联网搜图", "返回设置", back) {
+        OperationScreen("Google 扩展 · Beta", "返回 φ 智能", back) {
             Column(Modifier.fillMaxSize().verticalScroll(rememberScrollState()).padding(16.dp),
                 verticalArrangement = Arrangement.spacedBy(20.dp)) {
-                Text("用照片发现更多", style = MaterialTheme.typography.headlineMedium)
+                Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(10.dp)) {
+                    Text("联网搜图", style = MaterialTheme.typography.headlineMedium)
+                    BetaBadge()
+                }
+                OperationGroup("Google 扩展") {
+                    val authorized = authorization == SearchAuthorizationStatus.READY
+                    val active = settings.fiEnabled && authorized
+                    OperationItem("启用 Google 扩展", Modifier.testTag("fi-google-switch").toggleable(
+                        settings.googleExtensionEnabled && authorized, enabled = active, role = Role.Switch) {
+                        feedback.perform(); store.setGoogleExtensionEnabled(it)
+                    }, summary = fiOnlineReason(settings.fiEnabled,settings.googleExtensionEnabled,authorized) ?: "已启用 · 搜索前仍需确认上传",
+                        trailing = { Switch(settings.googleExtensionEnabled && authorized, onCheckedChange = null, enabled = active) })
+                }
                 Text("Google 联网搜图独立于本地 AI 搜索。每次新搜索前均需确认上传，历史结果保存在本机，重复查看免费。",
                     style = MaterialTheme.typography.bodyLarge)
+                OperationGroup("搜图授权") {
+                    Column(Modifier.padding(16.dp)) { SearchAuthorizationControls { scope.launch { loadQuota() } } }
+                }
                 OnlineButtonPreview(settings)
                 OperationGroup("照片上的搜索按钮") {
                     OperationItem("显示联网搜图按钮",
@@ -104,7 +122,7 @@ internal fun OnlineSearchSettings(store: SettingsStore, back: () -> Unit) {
                 }
                 OperationGroup("Google 共享额度") {
                     OperationItem("Google Cloud Vision", leading = { GoogleMark() },
-                        summary = "与经典版共用服务端额度，所有用户共享。")
+                        summary = "与经典版共用服务端额度，已授权设备共享。")
                     Column(Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(12.dp)) {
                         val current = quota
                         if (current != null) {
@@ -114,7 +132,7 @@ internal fun OnlineSearchSettings(store: SettingsStore, back: () -> Unit) {
                         }
                         if (quotaBusy) LinearProgressIndicator(Modifier.fillMaxWidth())
                         quotaFailure?.let { Text(it, color = MaterialTheme.colorScheme.error) }
-                        TapTextButton(onClick = { scope.launch { loadQuota() } }, enabled = !quotaBusy) { Text("刷新共享额度") }
+                        TapTextButton(onClick = { scope.launch { loadQuota() } }, enabled = !quotaBusy && settings.fiEnabled && settings.googleExtensionEnabled && SearchAuthorization.ready) { Text("刷新共享额度") }
                     }
                 }
                 Spacer(Modifier.height(16.dp))

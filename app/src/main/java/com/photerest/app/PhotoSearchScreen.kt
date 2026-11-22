@@ -54,6 +54,7 @@ internal fun PhotoSearchScreen(
     search: LocalSearchViewModel,
     open: (Photo, PhotoMotionKey) -> Unit,
     bottomBar: @Composable () -> Unit,
+    settings: () -> Unit = {},
 ) {
     val ui by search.state.collectAsState()
     var scopeAlbum by rememberSaveable { mutableStateOf<String?>(null) }
@@ -122,7 +123,7 @@ internal fun PhotoSearchScreen(
             TopAppBar(
                 title = {
                     Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                        Text("智能搜索", maxLines = 1, overflow = TextOverflow.Ellipsis)
+                        Text("φ 智能搜索", maxLines = 1, overflow = TextOverflow.Ellipsis)
                         BetaBadge()
                     }
                 },
@@ -135,8 +136,8 @@ internal fun PhotoSearchScreen(
                                 onClick = { showScores = !showScores; showMenu = false },
                             )
                             DropdownMenuItem(
-                                text = { Text("清理本地索引") },
-                                onClick = { search.clearIndex(); showMenu = false },
+                                text = { Text("本地 AI 设置") },
+                                onClick = { showMenu = false; settings() },
                             )
                         }
                     }
@@ -158,13 +159,18 @@ internal fun PhotoSearchScreen(
         ) {
             item(span = StaggeredGridItemSpan.FullLine, key = "header") {
                 Column(verticalArrangement = Arrangement.spacedBy(12.dp)) {
-                    EngineCard(
-                        ui = ui,
-                        onDownload = search::downloadAndLoad,
-                        onLoad = search::loadModel,
-                        onRetry = search::retry,
-                    )
-                    SharedModelCard(ui, search)
+                    Card(onClick = settings, modifier = Modifier.fillMaxWidth()) {
+                        Row(Modifier.padding(16.dp), verticalAlignment = Alignment.CenterVertically,
+                            horizontalArrangement = Arrangement.spacedBy(12.dp)) {
+                            FiIcon(Modifier.size(48.dp))
+                            Column(Modifier.weight(1f)) {
+                                Text("本地 AI", style = MaterialTheme.typography.titleMedium)
+                                Text(if (engineReady) "模型已连接 · ${ui.accelerator ?: "共享中心"}" else "查看共享中心、模型状态与组件准备",
+                                    style = MaterialTheme.typography.bodySmall)
+                            }
+                            Text("›")
+                        }
+                    }
                     AlbumCard(
                         engineReady = engineReady,
                         analyzed = analyzed,

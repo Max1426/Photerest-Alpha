@@ -5,6 +5,7 @@ import androidx.compose.foundation.layout.*
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
 import androidx.compose.runtime.snapshots.Snapshot
+import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.draw.drawWithCache
@@ -20,6 +21,7 @@ import androidx.compose.ui.layout.positionInRoot
 import androidx.compose.ui.platform.LocalView
 import androidx.compose.ui.semantics.contentDescription
 import androidx.compose.ui.semantics.semantics
+import androidx.compose.ui.semantics.stateDescription
 import androidx.compose.ui.unit.IntSize
 import androidx.compose.ui.unit.dp
 import kotlin.math.ceil
@@ -94,19 +96,27 @@ private fun Modifier.onlineGlass(backdrop: OnlineBackdrop?, radiusDp: Int, tint:
 @Composable
 internal fun OnlineSearchFab(settings: AppSettings, backdrop: OnlineBackdrop?, modifier: Modifier = Modifier, action: () -> Unit) {
     OnlineTheme {
-        val color = MaterialTheme.colorScheme.secondaryContainer
+        val authorization by SearchAuthorization.status.collectAsState()
+        val permitted = fiOnlineReason(settings.fiEnabled,settings.googleExtensionEnabled,authorization == SearchAuthorizationStatus.READY) == null
+        val color = if (permitted) MaterialTheme.colorScheme.secondaryContainer else MaterialTheme.colorScheme.surfaceContainerHighest
         val supported = Build.VERSION.SDK_INT >= 31 && LocalView.current.isHardwareAccelerated
         val glass = settings.onlineSearchGlass && supported && backdrop != null
         val shape = FloatingActionButtonDefaults.shape
         val surface = if (glass) Modifier.onlineGlass(backdrop, settings.onlineSearchBlurDp, color.copy(alpha = .58f), shape) else Modifier
         val feedback = LocalTapFeedback.current
-        FloatingActionButton(
-            onClick = { feedback.perform(); action() },
-            modifier = modifier.size(56.dp).then(surface).semantics { contentDescription = "使用 Google 联网搜图" },
-            shape = shape,
-            containerColor = if (glass) Color.Transparent else color,
-            contentColor = MaterialTheme.colorScheme.onSecondaryContainer,
-            elevation = FloatingActionButtonDefaults.elevation(defaultElevation = 0.dp, pressedElevation = 0.dp)
-        ) { Symbol(Glyph.SEARCH, Modifier.size(24.dp)) }
+        Box(modifier.size(56.dp)) {
+            FloatingActionButton(
+                onClick = { feedback.perform(); action() },
+                modifier = Modifier.fillMaxSize().then(surface).semantics {
+                    contentDescription = "使用 Google 联网搜图"
+                    stateDescription = if (permitted) "Beta 测试版" else "Beta 测试版，不可用；点按了解原因"
+                },
+                shape = shape,
+                containerColor = if (glass) Color.Transparent else color,
+                contentColor = if (permitted) MaterialTheme.colorScheme.onSecondaryContainer else MaterialTheme.colorScheme.onSurface.copy(alpha=.38f),
+                elevation = FloatingActionButtonDefaults.elevation(defaultElevation = 0.dp, pressedElevation = 0.dp)
+            ) { Symbol(Glyph.SEARCH, Modifier.size(24.dp)) }
+            BetaBadge(Modifier.align(Alignment.TopEnd).offset(x=6.dp,y=(-8).dp))
+        }
     }
 }

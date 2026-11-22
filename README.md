@@ -1,36 +1,37 @@
 # Photerest Alpha
 
-基于 Kotlin、Jetpack Compose 和 Material 3 的开源 Android 照片与视频浏览应用。支持收藏、每日精选、无字模式、原位过渡，以及独立的本地 AI 搜索实验和 Google 联网搜图。
+Kotlin、Jetpack Compose 与 Material 3 的开源 Android 照片/视频浏览应用。com.photerest.app.material，Android 8+，Apache-2.0。与经典版可并排安装，资料、收藏、偏好和索引独立。
 
-## 最新版本：1.8.2
+## 最新测试版 1.10.1（29）
 
-[下载 Alpha APK](https://github.com/Max1426/Photerest-Alpha/releases/download/v1.8.2/Photerest-Alpha-1.8.2.apk) · [Release](https://github.com/Max1426/Photerest-Alpha/releases/tag/v1.8.2) · [校验值](https://github.com/Max1426/Photerest-Alpha/releases/download/v1.8.2/SHA256SUMS.txt) · [验证记录](docs/verification-1.8.2.md)
+[测试发布](https://github.com/Max1426/Photerest-Alpha/releases/tag/v1.10.1) · [APK](https://github.com/Max1426/Photerest-Alpha/releases/download/v1.10.1/Photerest-Alpha-1.10.1.apk) · [校验值](https://github.com/Max1426/Photerest-Alpha/releases/download/v1.10.1/SHA256SUMS.txt) · [验证记录](docs/verification-1.10.1.md)
 
-- 修复不同视频的封面串位，保留视频展开、缩回、预测返回和进度延续。
-- Google 联网搜图在每次新搜索前确认上传与一次共享额度消耗；历史结果保存在本机，重复查看免费。结果面板的拖动和首次加载已修复。
-- 照片详情搜索按钮默认使用 Material 取色毛玻璃，可关闭或调节 0–30 dp（默认 14 dp）。Android 12 以下使用实色 Material 按钮。新加入的搜图界面采用 Material 3 Expressive。
-- 主页、关联相册与收藏支持照片和视频混排、静音预览、分享和打开原图/视频。无字模式默认开启。
+- φ 智能默认关闭，统一本地 AI 与仅 Google 的 Beta 扩展。关闭保留模型、索引、授权和历史；开启有可重播的原生指南。
+- φ 抽屉在所在窗口显示，统一进出场和拖动，避免内容反复排版和系统栏切换；后方底栏保持原位。新界面为 Material 3 Expressive。
+- 联网另需设备授权，新请求先确认上传及一次额度，历史免费复用。公开安装不授予联网权限，本地 AI 不受该授权限制。
+- 保留静音视频预览、详情有声、原位过渡/预测返回、收藏、每日精选、无字模式和可调 Material 取色搜索按钮玻璃。
+- 本版新增流程的 vivo 覆盖验收仍待完成，既有模拟器和单元测试范围详见验证记录。
 
-应用 ID `com.photerest.app.material`；最低 Android 8.0；可与[经典版](https://github.com/Max1426/Photerest)并排安装。覆盖升级需要签名一致。
+## 正式发布记录
 
-## 本地 AI 搜索实验与模型中心
+[1.8.2 Release](https://github.com/Max1426/Photerest-Alpha/releases/tag/v1.8.2) 保留为 Latest；1.10.1 是 Pre-release。
 
-本地 AI 需要 **Android 12+ ARM64**；从 1.7.2 起必须先安装同签名的 [Photerest AI Hub 0.1.0](https://github.com/Max1426/Photerest-Alpha/releases/download/v1.8.2/Photerest-AI-Hub-0.1.0.apk)。模型约 485 MB，**未包含在 APK 中**。中心准备模型后，本地索引与查询在手机运行。共享中心、迁移与跨应用推理仅构建完成，仍待手机验收；不要将其视为已经验证稳定的生产功能。经典版尚未接入中心。
+## 共享 AI 中心
 
-[模型中心源码（Apache-2.0）](https://github.com/Max1426/Photerest-Alpha/releases/download/v1.8.2/Photerest-AI-Hub-0.1.0-source.zip) · [安装与迁移说明](docs/AI-HUB-SETUP.md)。客户端 AAR 及对应源码在 `app/libs`，Alpha 构建不依赖桌面其他目录。模型另有自身许可，参见模型中心 NOTICE。
+本地 AI 需 Android 12+ ARM64 和同签名 [Hub 0.2.0](https://github.com/Max1426/Photerest-Alpha/releases/download/v1.10.1/Photerest-AI-Hub-0.2.0.apk)。模型约 485MB，不在 APK/源码中；中心保存一份模型和共享运行时，客户端各存索引。已有模型复用，覆盖升级不先卸载。
 
-Google 联网搜图与本地 AI 独立：联网搜图经确认后上传缩放副本，并与经典版共用服务端额度，不是离线 AI，也不等同于 Google Lens 网页。
+[中心源码](https://github.com/Max1426/Photerest-Alpha/releases/download/v1.10.1/Photerest-AI-Hub-0.2.0-source.zip) · [安装与迁移](docs/AI-HUB-SETUP.md)。SDK AAR/源码位于 app/libs，构建不依赖其他桌面工程；模型与运行库各有条款，不宣称 NPU。用户已有中心调用成功反馈，不能代替本版新流程验收。
+
+本地管理支持选择 APK 并请求系统安装，未配置组件自动下载。清理索引、卸载中心独立确认；总开关不删除模型。
 
 ## 构建
 
-JDK 17+、Android SDK 35。配置本机 SDK 路径后：
+JDK 17+、Android SDK 35，设置 ANDROID_HOME 或自己的 local.properties：
 
 ```powershell
-.\gradlew.bat :app:assembleDebug -PimageSearchOrigin=https://photerest-image-search.songy9539.workers.dev
+.\gradlew.bat :app:assembleDebug :app:testDebugUnitTest :app:lintDebug -PimageSearchOrigin=https://photerest-image-search.songy9539.workers.dev
 ```
 
-不传 `imageSearchOrigin` 时，联网识图服务未配置；本地浏览不受影响。输出在 `app/build/outputs/apk/debug/`。自行构建默认使用本机调试证书，可能无法覆盖官方发布包或连接官方 Hub；自行编译中心与客户端时应使用同一签名。
+输出 app/build/outputs/apk/debug/app-debug.apk。不传 imageSearchOrigin 时联网服务未配置；公开地址不代表已获得使用授权。自行构建使用本机证书，覆盖发行包或连接中心需签名一致。
 
-## 文档与许可
-
-[更新记录](CHANGELOG.md) · [博客更新交接](docs/BLOG-HANDOFF-2026-11-22.md) · [Apache-2.0](LICENSE) · [第三方声明](NOTICE)。Google 标志归 Google LLC 所有，模型许可与客户端源码许可独立。测试资源为生成的几何图片与视频；模拟器验证不代表真机验收。
+[更新记录](CHANGELOG.md) · [Apache-2.0](LICENSE) · [NOTICE](NOTICE)。Google 标志归 Google LLC。测试素材为既有公开模拟器夹具，不上传私人媒体；网站和博客本次不变。

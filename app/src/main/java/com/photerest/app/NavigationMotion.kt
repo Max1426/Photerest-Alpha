@@ -64,6 +64,7 @@ internal fun RowScope.BouncyNavigationItem(
     bounce: NavigationBounceState,
     description: String,
     label: String,
+    modifier: Modifier = Modifier,
     badge: String? = null,
     icon: @Composable () -> Unit,
 ) {
@@ -108,7 +109,7 @@ internal fun RowScope.BouncyNavigationItem(
         },
         label = { Text(label) },
         interactionSource = interaction,
-        modifier = Modifier
+        modifier = modifier
             .graphicsLayer { scaleX = scale; scaleY = scale }
             .semantics { contentDescription = description; this[NavPressScale] = scale },
     )

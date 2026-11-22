@@ -12,8 +12,8 @@ android {
         applicationId = "com.photerest.app.material"
         minSdk = 26
         targetSdk = 35
-        versionCode = 25
-        versionName = "1.8.2"
+        versionCode = 29
+        versionName = "1.10.1"
         buildConfigField("String", "IMAGE_SEARCH_ORIGIN", "\"$imageSearchOrigin\"")
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
         testInstrumentationRunnerArguments["notAnnotation"] = "com.photerest.app.PermissionScenario"

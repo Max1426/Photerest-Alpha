@@ -38,8 +38,11 @@ internal object ImageSearchClient {
     val configured get() = origin.isNotEmpty()
 
     private suspend fun request(path: String, jpeg: ByteArray? = null): JSONObject = withContext(Dispatchers.IO) {
+        FiAccess.requireOnline()
         if (!configured) throw SearchFailure("not_configured")
+        val headers = SearchAuthorization.headers(if (jpeg == null) "GET" else "POST", path, jpeg ?: byteArrayOf())
         val connection = openHttps(origin + path)
+        headers.forEach { (name, value) -> connection.setRequestProperty(name, value) }
         try {
             if (jpeg != null) {
                 connection.requestMethod = "POST"
@@ -52,7 +55,14 @@ internal object ImageSearchClient {
             val body = (if (status in 200..299) connection.inputStream else connection.errorStream)
                 ?.use { JSONObject(it.readBounded(256 * 1024).toString(Charsets.UTF_8)) }
                 ?: throw SearchFailure("unavailable")
-            if (status !in 200..299) throw SearchFailure(body.optString("error", "unavailable"))
+            if (status !in 200..299) {
+                val code = body.optString("error", "unavailable")
+                if (status == 401) {
+                    SearchAuthorization.rejected(code)
+                    throw SearchAuthorizationFailure(code)
+                }
+                throw SearchFailure(code)
+            }
             body
         } finally {
             connection.disconnect()
@@ -68,6 +78,10 @@ internal object ImageSearchClient {
     }
 
     suspend fun search(context: Context, engine: SearchEngine, photo: Photo): List<SearchResult> {
+        SearchAuthorization.initialize(context)
+        FiAccess.initialize(context)
+        FiAccess.requireOnline()
+        if (!SearchAuthorization.ready) throw SearchAuthorizationFailure("unauthorized")
         if (!configured) throw SearchFailure("not_configured")
         val bitmap = PhotoBitmaps.load(context, photo.uri, large = true, revision = photo.added)
             ?: throw SearchFailure("unreadable")
@@ -90,6 +104,8 @@ internal object ImageSearchClient {
 }
 
 internal fun searchMessage(error: Exception): String = when (error) {
+    is FiUnavailable -> error.message ?: "φ 智能尚未开启"
+    is SearchAuthorizationFailure -> error.message ?: "联网搜索功能暂时不可用。"
     is SocketTimeoutException -> "请求超时，请稍后重试"
     is SearchFailure -> when (error.code) {
         "quota" -> "该引擎的共享搜索额度已用完"

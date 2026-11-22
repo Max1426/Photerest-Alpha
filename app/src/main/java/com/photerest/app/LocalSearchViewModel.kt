@@ -69,6 +69,7 @@ internal class LocalSearchViewModel(application: Application) : AndroidViewModel
 
     /** Called when the search tab is first shown; loads an already-downloaded model automatically. */
     fun autoLoad() {
+        if (!app.getSharedPreferences("appearance", 0).getBoolean("fi_enabled", false)) return
         if (!supported) return
         if (_state.value.engine == LocalSearchEngineState.DOWNLOADED) loadModel()
     }
@@ -113,6 +114,9 @@ internal class LocalSearchViewModel(application: Application) : AndroidViewModel
     }
 
     fun loadModel() {
+        if (!app.getSharedPreferences("appearance", 0).getBoolean("fi_enabled", false)) {
+            _state.update { it.copy(error = "φ 智能尚未开启") }; return
+        }
         if (!supported || loadJob?.isActive == true ||
             _state.value.engine in setOf(LocalSearchEngineState.LOADING, LocalSearchEngineState.READY)
         ) return
@@ -152,6 +156,9 @@ internal class LocalSearchViewModel(application: Application) : AndroidViewModel
     }
 
     fun analyze(photos: List<Photo>, scope: String?) {
+        if (!app.getSharedPreferences("appearance", 0).getBoolean("fi_enabled", false)) {
+            _state.update { it.copy(error = "φ 智能尚未开启") }; return
+        }
         val engine = embedder
         if (engine == null) {
             _state.update { it.copy(error = "请先加载本地模型") }
@@ -213,6 +220,9 @@ internal class LocalSearchViewModel(application: Application) : AndroidViewModel
     }
 
     fun search(query: String, photos: List<Photo>) {
+        if (!app.getSharedPreferences("appearance", 0).getBoolean("fi_enabled", false)) {
+            _state.update { it.copy(error = "φ 智能尚未开启") }; return
+        }
         searchJob?.cancel()
         val text = query.trim()
         if (text.isEmpty()) {

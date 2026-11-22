@@ -66,8 +66,9 @@ internal fun SettingsScreen(store: SettingsStore, dismiss: () -> Unit, daily: ()
                 )
             }
             OperationGroup("偏好") {
-                OperationItem("联网搜图", Modifier.tapClickable(onClick = onlineSearch),
-                    summary = "Google 搜图、共享额度与按钮毛玻璃", trailing = { Text("›") })
+                OperationItem("φ 智能", Modifier.testTag("fi-settings-entry").tapClickable(onClick = onlineSearch),
+                    leading = { FiIcon(Modifier.size(40.dp), disabled = !settings.fiEnabled) },
+                    summary = "本地 AI、Google Beta 扩展与组件管理", trailing = { Text("›") })
                 OperationItem(
                     "震动反馈", Modifier.testTag("haptics-switch").toggleable(settings.haptics, role = Role.Switch) {
                         store.setHaptics(it)
